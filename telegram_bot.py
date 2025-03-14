@@ -2,10 +2,12 @@
 # TELEGRAM_BOT.PY (ULTIMATE VERSION V7 - ENHANCED MowBot MVP)
 #
 # Features:
-# - Photo Upload Enhancement: Splits media groups into chunks of 10 (up to 25 photos).
+# - Photo Upload Enhancement: Splits media groups into chunks of 10 (up to 25 photos) for director viewing.
+#   Employee photo uploads update a counter message (e.g., "15/25 photos uploaded") instead of spamming.
 # - Job Assignment Improvements: Adds a day-of-the-week selection step and groups jobs by day.
 # - Inline UI Enhancements: Dynamic greetings, sleek inline menus with clear navigation.
 # - Editing Assigned Jobs: Director can toggle green tick selections to modify assignments.
+# - Developer Dashboards: Full dev menus for debugging and testing.
 # - Core functionalities and robust error handling remain intact.
 #
 # Future-proofing for a customizable base model and potential AI integrations.
@@ -102,14 +104,20 @@ cursor.executescript("""
     CREATE INDEX IF NOT EXISTS idx_grounds_status ON grounds_data(status);
     CREATE INDEX IF NOT EXISTS idx_grounds_site_name ON grounds_data(site_name);
 """)
-# (Assume initial population has been done previously)
+# Ensure scheduled_date exists (if table was created before, add it)
+try:
+    cursor.execute("ALTER TABLE grounds_data ADD COLUMN scheduled_date TEXT;")
+    conn.commit()
+    logger.info("Added scheduled_date column to grounds_data.")
+except sqlite3.OperationalError as e:
+    logger.info("scheduled_date column likely already exists.")
 
 #######################################
 # HELPER: Safe Edit Text Function
 #######################################
 
 async def safe_edit_text(message, text, reply_markup=None):
-    """Attempt to edit a message; if it fails (e.g., message has no text), send a new message."""
+    """Attempt to edit a message; if it fails, send a new message."""
     try:
         if message.text and message.text.strip():
             return await message.edit_text(text, reply_markup=reply_markup)
@@ -125,12 +133,11 @@ async def safe_edit_text(message, text, reply_markup=None):
 
 async def reset_completed_jobs():
     logger.info("Resetting completed jobs for a new day.")
-    # Reset jobs completed yesterday (only reset those that are for 'today'; preserve scheduled future jobs)
     cursor.execute("UPDATE grounds_data SET status = 'pending', assigned_to = NULL, finish_time = NULL WHERE status = 'completed' AND (scheduled_date IS NULL OR scheduled_date = date('now','localtime'))")
     conn.commit()
 
 #######################################
-# PHOTO UPLOAD ENHANCEMENT (in director_send_job)
+# PHOTO UPLOAD ENHANCEMENT
 #######################################
 
 async def director_send_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,9 +177,9 @@ async def director_send_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
     markup = InlineKeyboardMarkup(keyboard)
     
     if media_group:
-        # Split media_group into chunks of 10
         max_items = 10
         chunks = [media_group[i:i + max_items] for i in range(0, len(media_group), max_items)]
+        # Send each chunk sequentially. For the first chunk, include the job details.
         for index, chunk in enumerate(chunks):
             if index == 0:
                 if len(chunk) == 1:
@@ -185,32 +192,65 @@ async def director_send_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await safe_edit_text(update.callback_query.message, detail_text, reply_markup=markup)
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "awaiting_photo_for" not in context.user_data:
+        return
+    job_id = context.user_data["awaiting_photo_for"]
+    photo_file = await update.message.photo[-1].get_file()
+    photo_dir = "photos"
+    os.makedirs(photo_dir, exist_ok=True)
+    photo_filename = f"job_{job_id}_{photo_file.file_id}.jpg"
+    photo_path = os.path.join(photo_dir, photo_filename)
+    await photo_file.download_to_drive(custom_path=photo_path)
+    cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
+    result = cursor.fetchone()
+    current = result[0] if result else ""
+    if current and current.strip():
+        new_photos = current.strip() + "|" + photo_path
+    else:
+        new_photos = photo_path
+    cursor.execute("UPDATE grounds_data SET photos = ? WHERE id = ?", (new_photos, job_id))
+    conn.commit()
+    # Count the photos uploaded for this job.
+    photo_count = len(new_photos.split("|"))
+    max_photos = 25
+    confirmation_text = f"✅ Photo uploaded for Job {job_id}. ({photo_count}/{max_photos} photos uploaded)"
+    await update.message.reply_text(confirmation_text)
+    # Optionally, do not refresh the entire employee dashboard immediately.
+    # await emp_view_jobs(update, context)
+
 #######################################
 # JOB ASSIGNMENT & DAY SELECTION
 #######################################
 
+def build_director_assign_jobs_page(page, context):
+    """
+    Build and return a tuple (text, markup) for the director's assign jobs page.
+    (This function may be expanded later for pagination and job selection.)
+    """
+    text = f"Assign Jobs Page - Page {page}\nSelect the jobs to assign."
+    keyboard = [
+        [InlineKeyboardButton("Back", callback_data="director_dashboard")]
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
+    return text, markup
+
 async def director_select_day_for_assignment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Display an inline keyboard for selecting a day of the week for assignment."""
     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     keyboard = []
     for day in days:
         keyboard.append([InlineKeyboardButton(day, callback_data=f"assign_day_{day}")])
-    # Include a Back button to return to the main director dashboard.
     keyboard.append([InlineKeyboardButton("Back", callback_data="director_dashboard")])
     markup = InlineKeyboardMarkup(keyboard)
     
-    # Dynamic greeting based on time
     current_hour = datetime.now().hour
     greeting = "Good Morning" if current_hour < 12 else "Good Afternoon"
     header = f"{greeting}! Please select a day of the week for assignment:"
     await safe_edit_text(update.callback_query.message, header, reply_markup=markup)
 
 async def director_assign_day_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Store the selected day and move to employee assignment submenu."""
     selected_day = update.callback_query.data.split("_")[-1]
-    # Store the selected day in user_data for later use.
     context.user_data["selected_day"] = selected_day
-    # Now move to the employee assignment submenu.
     keyboard = [
         [InlineKeyboardButton("Assign to Andy", callback_data="assign_to_1672989849")],
         [InlineKeyboardButton("Assign to Alex", callback_data="assign_to_6396234665")],
@@ -229,14 +269,12 @@ async def director_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE)
     current_hour = now.hour
     greeting = "Good Morning" if current_hour < 12 else "Good Afternoon"
     header = f"{greeting}, Director! \nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-    # Build dashboard buttons: Assign Jobs, View Jobs by Day, Calendar
     keyboard = [
         [InlineKeyboardButton("📝 Assign Jobs", callback_data="dir_assign_jobs_0")],
         [InlineKeyboardButton("👤 View Andy's Jobs", callback_data="view_andys_jobs")],
         [InlineKeyboardButton("👤 View Alex's Jobs", callback_data="view_alexs_jobs")],
         [InlineKeyboardButton("Calendar", callback_data="calendar_view")]
     ]
-    # If the user is a dev, add a dev-back button
     if update.effective_user.id in dev_users:
         keyboard.append([InlineKeyboardButton("Back", callback_data="dev_dashboard")])
     markup = InlineKeyboardMarkup(keyboard)
@@ -250,7 +288,6 @@ async def director_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE)
 #######################################
 
 async def director_view_employee_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE, employee_id: int, employee_name: str):
-    # Query jobs assigned to the employee, grouping by scheduled_date (or if null, assume today)
     cursor.execute(
         """
         SELECT id, site_name, scheduled_date, start_time, finish_time, status 
@@ -268,7 +305,6 @@ async def director_view_employee_jobs(update: Update, context: ContextTypes.DEFA
     keyboard = []
     current_day = None
     for job_id, site_name, scheduled_date, start_time, finish_time, status in jobs:
-        # Use scheduled_date if available; otherwise, default to today.
         day = scheduled_date if scheduled_date else "Today"
         if day != current_day:
             current_day = day
@@ -300,8 +336,6 @@ async def director_view_alexs_jobs(update: Update, context: ContextTypes.DEFAULT
 #######################################
 
 async def director_assign_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # For assigning jobs, assume the Director selects jobs via green ticks.
-    # After job selection, if the Director clicks "Continue", prompt to select a day.
     if update.callback_query and update.callback_query.data.startswith("dir_assign_jobs_"):
         try:
             page = int(update.callback_query.data.split("_")[-1])
@@ -311,7 +345,6 @@ async def director_assign_jobs(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         page = context.user_data.get("current_page", 0)
     text, markup = build_director_assign_jobs_page(page, context)
-    # Add an extra button for "Continue" that leads to day selection if jobs are selected.
     if context.user_data.get("selected_jobs"):
         extra_button = [InlineKeyboardButton("Continue to Day Selection", callback_data="select_day_for_assignment")]
         markup.inline_keyboard.append(extra_button)
@@ -365,7 +398,6 @@ async def assign_jobs_to_employee(update: Update, context: ContextTypes.DEFAULT_
     if not selected_jobs:
         await safe_edit_text(update.callback_query.message, "⚠️ No jobs selected.")
         return
-    # Update each selected job with the employee and the selected day
     selected_day = context.user_data.get("selected_day", "Today")
     for site_name in selected_jobs:
         cursor.execute("SELECT id FROM grounds_data WHERE site_name = ?", (site_name,))
@@ -466,18 +498,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_path = os.path.join(photo_dir, photo_filename)
     await photo_file.download_to_drive(custom_path=photo_path)
     cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
-    current = cursor.fetchone()[0]
+    result = cursor.fetchone()
+    current = result[0] if result else ""
     if current and current.strip():
         new_photos = current.strip() + "|" + photo_path
     else:
         new_photos = photo_path
     cursor.execute("UPDATE grounds_data SET photos = ? WHERE id = ?", (new_photos, job_id))
     conn.commit()
-    logger.info(f"Photo saved for Job {job_id}: {photo_path}")
-    msg = await update.message.reply_text(f"✅ Photo uploaded for Job {job_id}.")
-    await asyncio.sleep(2)
-    await msg.delete()
-    await emp_view_jobs(update, context)
+    # Count the photos uploaded for this job.
+    photo_count = len(new_photos.split("|"))
+    max_photos = 25
+    confirmation_text = f"✅ Photo uploaded for Job {job_id}. ({photo_count}/{max_photos} photos uploaded)"
+    await update.message.reply_text(confirmation_text)
+    # Optionally, update the dashboard later rather than spamming individual messages.
+    # await emp_view_jobs(update, context)
 
 async def emp_site_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     job_id = int(update.callback_query.data.split("_")[-1])
@@ -547,7 +582,6 @@ async def director_edit_note(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await safe_edit_text(update.callback_query.message, f"Please send the note for Job {job_id}:", reply_markup=markup)
 
 async def director_cancel_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Return to the job detail view.
     await director_send_job(update, context)
 
 #######################################
@@ -570,9 +604,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #######################################
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
+    data = update.callback_query.data
+    await update.callback_query.answer()
     if data == "start":
         await start(update, context)
     elif data == "dev_employee_dashboard":
@@ -586,7 +619,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "calendar_view":
         await director_calendar_view(update, context)
     elif data.startswith("select_day_"):
-        await director_select_day(update, context)
+        # Assuming you have a function director_select_day (if not, this could call director_select_day_for_assignment)
+        await director_select_day_for_assignment(update, context)
     elif data == "select_day_for_assignment":
         await director_select_day_for_assignment(update, context)
     elif data.startswith("assign_day_"):
@@ -679,6 +713,18 @@ async def dev_employee_dashboard(update: Update, context: ContextTypes.DEFAULT_T
         await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
     else:
         await update.message.reply_text(text, reply_markup=markup)
+
+#######################################
+# DIRECTOR CALENDAR VIEW (Stub)
+#######################################
+
+async def director_calendar_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "Calendar View: [Feature coming soon - This is a stub]"
+    keyboard = [
+        [InlineKeyboardButton("Back", callback_data="director_dashboard")]
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
+    await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
 
 #######################################
 # START COMMAND
