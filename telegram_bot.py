@@ -230,23 +230,20 @@ async def director_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE)
     greeting = "Good Morning" if current_hour < 12 else "Good Afternoon"
     header = f"{greeting}, Director! \nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
     # Build dashboard buttons: Assign Jobs, View Jobs by Day, Calendar
+    keyboard = [
+        [InlineKeyboardButton("📝 Assign Jobs", callback_data="dir_assign_jobs_0")],
+        [InlineKeyboardButton("👤 View Andy's Jobs", callback_data="view_andys_jobs")],
+        [InlineKeyboardButton("👤 View Alex's Jobs", callback_data="view_alexs_jobs")],
+        [InlineKeyboardButton("Calendar", callback_data="calendar_view")]
+    ]
+    # If the user is a dev, add a dev-back button
     if update.effective_user.id in dev_users:
-        keyboard = [
-            [InlineKeyboardButton("📝 Assign Jobs", callback_data="dir_assign_jobs_0")],
-            [InlineKeyboardButton("👤 View Andy's Jobs", callback_data="view_andys_jobs")],
-            [InlineKeyboardButton("👤 View Alex's Jobs", callback_data="view_alexs_jobs")],
-            [InlineKeyboardButton("Calendar", callback_data="calendar_view")],
-            [InlineKeyboardButton("Back", callback_data="dev_dashboard")]
-        ]
-    else:
-        keyboard = [
-            [InlineKeyboardButton("📝 Assign Jobs", callback_data="dir_assign_jobs_0")],
-            [InlineKeyboardButton("👤 View Andy's Jobs", callback_data="view_andys_jobs")],
-            [InlineKeyboardButton("👤 View Alex's Jobs", callback_data="view_alexs_jobs")],
-            [InlineKeyboardButton("Calendar", callback_data="calendar_view")]
-        ]
+        keyboard.append([InlineKeyboardButton("Back", callback_data="dev_dashboard")])
     markup = InlineKeyboardMarkup(keyboard)
-    await safe_edit_text(update.callback_query.message if update.callback_query else update.message, header, reply_markup=markup)
+    if update.callback_query:
+        await safe_edit_text(update.callback_query.message, header, reply_markup=markup)
+    else:
+        await update.message.reply_text(header, reply_markup=markup)
 
 #######################################
 # DIRECTOR: View Employee Jobs (Grouped by Day)
@@ -303,7 +300,7 @@ async def director_view_alexs_jobs(update: Update, context: ContextTypes.DEFAULT
 #######################################
 
 async def director_assign_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # For assigning jobs, we assume the Director selects jobs via green ticks.
+    # For assigning jobs, assume the Director selects jobs via green ticks.
     # After job selection, if the Director clicks "Continue", prompt to select a day.
     if update.callback_query and update.callback_query.data.startswith("dir_assign_jobs_"):
         try:
@@ -641,6 +638,47 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await director_cancel_note(update, context)
     elif data == "noop":
         pass
+
+#######################################
+# DEV DASHBOARD FUNCTIONS
+#######################################
+
+async def dev_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "Developer Dashboard: Choose an option"
+    keyboard = [
+        [InlineKeyboardButton("Director Dashboard", callback_data="dev_director_dashboard")],
+        [InlineKeyboardButton("Employee Dashboard", callback_data="dev_employee_dashboard")],
+        [InlineKeyboardButton("Back to Start", callback_data="start")]
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+    else:
+        await update.message.reply_text(text, reply_markup=markup)
+
+async def dev_director_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "Developer Director Dashboard: Debug Info & Director Options"
+    keyboard = [
+        [InlineKeyboardButton("Director Dashboard", callback_data="director_dashboard")],
+        [InlineKeyboardButton("Back to Dev Dashboard", callback_data="dev_dashboard")]
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+    else:
+        await update.message.reply_text(text, reply_markup=markup)
+
+async def dev_employee_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "Developer Employee Dashboard: Debug Info & Employee Options"
+    keyboard = [
+        [InlineKeyboardButton("Employee Dashboard", callback_data="emp_employee_dashboard")],
+        [InlineKeyboardButton("Back to Dev Dashboard", callback_data="dev_dashboard")]
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+    else:
+        await update.message.reply_text(text, reply_markup=markup)
 
 #######################################
 # START COMMAND
