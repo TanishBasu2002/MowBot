@@ -1,0 +1,19 @@
+[0;1;32m●[0m telegram_bot.service - Telegram Bot Service
+     Loaded: loaded (]8;;file://my-bot-droplet/etc/systemd/system/telegram_bot.service/etc/systemd/system/telegram_bot.service]8;;; [0;1;38;5;185mdisabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Sun 2025-03-09 22:01:26 UTC; 6s ago
+   Main PID: 203412 (python)
+      Tasks: 2 (limit: 1113)
+     Memory: 31.2M (peak: 31.4M)
+        CPU: 498ms
+     CGroup: /system.slice/telegram_bot.service
+             └─[0;38;5;245m203412 /root/CHATBOT/venv/bin/python telegram_bot.py[0m
+
+Mar 09 22:01:26 my-bot-droplet systemd[1]: Started telegram_bot.service - Telegram Bot Service.
+Mar 09 22:01:27 my-bot-droplet python[203412]: 2025-03-09 22:01:27,239 - tzlocal - WARNING - /etc/timezone is deprecated on Debian, and no longer reliable. Ignoring.
+Mar 09 22:01:27 my-bot-droplet python[203412]: 2025-03-09 22:01:27,244 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+Mar 09 22:01:27 my-bot-droplet python[203412]: 2025-03-09 22:01:27,245 - apscheduler.scheduler - INFO - Added job "reset_completed_jobs" to job store "default"
+Mar 09 22:01:27 my-bot-droplet python[203412]: 2025-03-09 22:01:27,245 - apscheduler.scheduler - INFO - Scheduler started
+Mar 09 22:01:27 my-bot-droplet python[203412]: 2025-03-09 22:01:27,288 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7506675624:AAG2bjN0caFxY00WilcAQ0aCTeak5KmipWw/getMe "HTTP/1.1 200 OK"
+Mar 09 22:01:27 my-bot-droplet python[203412]: 2025-03-09 22:01:27,300 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7506675624:AAG2bjN0caFxY00WilcAQ0aCTeak5KmipWw/deleteWebhook "HTTP/1.1 200 OK"
+Mar 09 22:01:27 my-bot-droplet python[203412]: 2025-03-09 22:01:27,303 - apscheduler.scheduler - INFO - Scheduler started
+Mar 09 22:01:27 my-bot-droplet python[203412]: 2025-03-09 22:01:27,303 - telegram.ext.Application - INFO - Application started
