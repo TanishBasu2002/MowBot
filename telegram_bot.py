@@ -646,8 +646,8 @@ def director_send_job(update: Update, context: CallbackContext):
     # Create button menu
     keyboard = []
     
-    # Photo viewing if available
-    if photos:
+# Photo viewing if available
+if photos:
     photos_list = photos.strip().split("|") if photos and photos.strip() else []
     media_group = []
     for p in photos_list:
@@ -659,6 +659,7 @@ def director_send_job(update: Update, context: CallbackContext):
                 logger.error(f"Error preparing photo for job {job_id}: {str(e)}")
         else:
             logger.warning(f"Photo file not found: {abs_path}")
+
     
     if media_group:
         max_items = 10
