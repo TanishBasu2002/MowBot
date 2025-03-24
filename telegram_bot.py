@@ -145,94 +145,8 @@ except sqlite3.OperationalError as e:
     logger.info("New columns likely already exist.")
 
 #######################################
-# HELPER: Safe Edit Text Function
+# HANDLERS
 #######################################
-
-def safe_edit_text(message, text, reply_markup=None):
-    """Attempt to edit a message; if it fails, send a new message."""
-    try:
-        if message.text and message.text.strip():
-            return message.edit_text(text, reply_markup=reply_markup)
-        else:
-            return message.reply_text(text, reply_markup=reply_markup)
-    except BadRequest as e:
-        logger.error(f"safe_edit_text error: {str(e)}")
-        return message.reply_text(text, reply_markup=reply_markup)
-
-#######################################
-# DAILY RESET FUNCTION
-#######################################
-
-def reset_completed_jobs():
-    logger.info("Resetting completed jobs for a new day.")
-    cursor.execute("UPDATE grounds_data SET status = 'pending', assigned_to = NULL, finish_time = NULL WHERE status = 'completed' AND (scheduled_date IS NULL OR scheduled_date = date('now','localtime'))")
-    conn.commit()
-
-#######################################
-# PHOTO UPLOAD ENHANCEMENT
-#######################################
-
-def director_send_job(update: Update, context: CallbackContext):
-    job_id = int(update.callback_query.data.split("_")[-1])
-    cursor.execute("SELECT site_name, photos, start_time, finish_time, notes FROM grounds_data WHERE id = ?", (job_id,))
-    row = cursor.fetchone()
-    if not row:
-        safe_edit_text(update.callback_query.message, MessageTemplates.format_error_message("Job not found", code="JOB_404"))
-        return
-    
-    site_name, photos, start_time, finish_time, notes = row
-    duration_str = "N/A"
-    if start_time and finish_time:
-        try:
-            start_dt = datetime.fromisoformat(start_time)
-            finish_dt = datetime.fromisoformat(finish_time)
-            duration = finish_dt - start_dt
-            duration_str = str(duration).split('.')[0]
-        except Exception as e:
-            duration_str = "N/A"
-    
-    photos_list = photos.strip().split("|") if photos and photos.strip() else []
-    media_group = []
-    for p in photos_list:
-        abs_path = os.path.join(os.getcwd(), p.strip())
-        if os.path.exists(abs_path):
-            try:
-                media_group.append(InputMediaPhoto(media=open(abs_path, 'rb')))
-            except Exception as e:
-                logger.error(f"Error preparing photo for job {job_id}: {str(e)}")
-        else:
-            logger.warning(f"Photo file not found: {abs_path}")
-    
-    detail_text = MessageTemplates.format_job_card(
-        site_name=site_name,
-        status="completed" if finish_time else "in_progress",
-        duration=duration_str,
-        notes=notes
-    )
-    
-    keyboard = ButtonLayouts.create_job_menu(
-        job_id=job_id,
-        status="completed" if finish_time else "in_progress",
-        has_photos=bool(photos),
-        has_notes=bool(notes)
-    )
-    markup = InlineKeyboardMarkup(keyboard)
-    
-    if media_group:
-        max_items = 10
-        chunks = [media_group[i:i + max_items] for i in range(0, len(media_group), max_items)]
-        for index, chunk in enumerate(chunks):
-            if index == 0:
-                if len(chunk) == 1:
-                    update.callback_query.message.reply_photo(photo=chunk[0].media, caption=detail_text, reply_markup=markup)
-                else:
-                    update.callback_query.message.reply_media_group(media=chunk)
-                    update.callback_query.message.reply_text(detail_text, reply_markup=markup)
-            else:
-                update.callback_query.message.reply_media_group(media=chunk)
-    else:
-        safe_edit_text(update.callback_query.message, detail_text, reply_markup=markup)
-
 def handle_photo(update: Update, context: CallbackContext):
     if "awaiting_photo_for" not in context.user_data:
         return
@@ -263,94 +177,320 @@ def handle_photo(update: Update, context: CallbackContext):
         )
         return
     
-    cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
+    try:
+        cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
+        result = cursor.fetchone()
+        current = result[0] if result else ""
+        
+        # Check current photo count
+        current_count = len(current.split("|")) if current and current.strip() else 0
+        if current_count >= 25:
+            update.message.reply_text(
+                MessageTemplates.format_error_message(
+                    "Photo Limit Reached",
+                    "Maximum number of photos (25) reached for this job.",
+                    code="PHOTO_LIMIT"
+                )
+            )
+            return
+        
+        if current and current.strip():
+            new_photos = current.strip() + "|" + photo_path
+        else:
+            new_photos = photo_path
+        
+        cursor.execute("UPDATE grounds_data SET photos = ? WHERE id = ?", (new_photos, job_id))
+        conn.commit()
+        
+        photo_count = len(new_photos.split("|"))
+        max_photos = 25
+        confirmation_text = MessageTemplates.format_success_message(
+            "Photo uploaded",
+            f"Photo uploaded for Job {job_id}. ({photo_count}/{max_photos} photos uploaded)"
+        )
+        
+        # Add keyboard to view photos or continue
+        keyboard = [
+            [InlineKeyboardButton("📸 View Photos", callback_data=f"view_photos_{job_id}")],
+            [InlineKeyboardButton("📝 Continue Uploading", callback_data=f"upload_photo_{job_id}")]
+        ]
+        markup = InlineKeyboardMarkup(keyboard)
+        
+        update.message.reply_text(confirmation_text, reply_markup=markup)
+    except sqlite3.Error as e:
+        logger.error(f"Database error while saving photo: {str(e)}")
+        update.message.reply_text(
+            MessageTemplates.format_error_message(
+                "Database Error",
+                "Failed to save photo. Please try again.",
+                code="DB_ERROR"
+            )
+        )
+
+def handle_text(update: Update, context: CallbackContext):
+    if "awaiting_note_for" in context.user_data:
+        job_id = context.user_data.pop("awaiting_note_for")
+        note = update.message.text
+        try:
+            # Check if job exists
+            cursor.execute("SELECT site_name FROM grounds_data WHERE id = ?", (job_id,))
+            result = cursor.fetchone()
+            if not result:
+                update.message.reply_text(
+                    MessageTemplates.format_error_message("Job not found", code="JOB_404")
+                )
+                return
+            
+            site_name = result[0]
+            cursor.execute("UPDATE grounds_data SET notes = ? WHERE id = ?", (note, job_id))
+            conn.commit()
+            
+            # Create keyboard to view job or edit again
+            keyboard = [
+                [InlineKeyboardButton("👀 View Job", callback_data=f"view_job_{job_id}")],
+                [InlineKeyboardButton("📝 Edit Again", callback_data=f"edit_note_{job_id}")]
+            ]
+            markup = InlineKeyboardMarkup(keyboard)
+            
+            update.message.reply_text(
+                MessageTemplates.format_success_message(
+                    "Note Updated",
+                    f"Note updated for {site_name} (Job {job_id})."
+                ),
+                reply_markup=markup
+            )
+        except sqlite3.Error as e:
+            logger.error(f"Database error while updating note: {str(e)}")
+            update.message.reply_text(
+                MessageTemplates.format_error_message(
+                    "Database Error",
+                    "Failed to update note. Please try again.",
+                    code="DB_ERROR"
+                )
+            )
+        return
+    
+    if "awaiting_notes" in context.user_data and context.user_data["awaiting_notes"]:
+        notes = update.message.text
+        selected_jobs = context.user_data.get("selected_jobs", set())
+        try:
+            updated_count = 0
+            for site_name in selected_jobs:
+                cursor.execute("SELECT id FROM grounds_data WHERE site_name = ?", (site_name,))
+                job = cursor.fetchone()
+                if job:
+                    cursor.execute("UPDATE grounds_data SET notes = ? WHERE id = ?", (notes, job[0]))
+                    updated_count += 1
+            
+            conn.commit()
+            
+            # Clear the awaiting_notes flag
+            del context.user_data["awaiting_notes"]
+            
+            update.message.reply_text(
+                MessageTemplates.format_success_message(
+                    "Notes Added",
+                    f"Notes added to {updated_count} job(s)."
+                )
+            )
+            director_assign_jobs(update, context)
+        except sqlite3.Error as e:
+            logger.error(f"Database error while adding notes: {str(e)}")
+            update.message.reply_text(
+                MessageTemplates.format_error_message(
+                    "Database Error",
+                    "Failed to add notes. Please try again.",
+                    code="DB_ERROR"
+                )
+            )
+
+def handle_toggle_job(update: Update, context: CallbackContext):
+    data = update.callback_query.data
+    job_id = int(data.split("_")[-1])
+    
+    try:
+        # Get current selection state
+        selected_jobs = context.user_data.get("selected_jobs", set())
+        
+        # Toggle selection
+        if job_id in selected_jobs:
+            selected_jobs.remove(job_id)
+        else:
+            selected_jobs.add(job_id)
+        
+        # Update context
+        context.user_data["selected_jobs"] = selected_jobs
+        
+        # Get current page
+        current_page = context.user_data.get("current_page", 1)
+        
+        # Rebuild the page with updated selection
+        text, markup = build_director_assign_jobs_page(current_page, context)
+        safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Error toggling job selection: {str(e)}")
+        update.callback_query.answer(
+            "Error toggling job selection. Please try again.",
+            show_alert=True
+        )
+
+def format_job_section(section_title: str, jobs: list) -> list:
+    """Format a section of jobs with consistent styling."""
+    status_emoji = MessageTemplates.STATUS_EMOJIS.get(jobs[0][5].lower(), '❓')
+    sections = [f"\n{status_emoji} {section_title} Jobs:"]
+    
+    for job in jobs:
+        job_id, site_name, scheduled_date, start_time, finish_time, status, area, notes = job
+        duration_str = "N/A"
+        if start_time and finish_time:
+            try:
+                start_dt = datetime.fromisoformat(start_time)
+                finish_dt = datetime.fromisoformat(finish_time)
+                duration = finish_dt - start_dt
+                duration_str = str(duration).split('.')[0]
+            except Exception:
+                duration_str = "N/A"
+        
+        sections.append(MessageTemplates.format_job_card(
+            site_name=site_name,
+            status=status,
+            area=area,
+            duration=duration_str,
+            notes=notes
+        ))
+    
+    return sections
+
+def create_job_buttons(jobs: list) -> list:
+    """Create interactive buttons for jobs with status indicators."""
+    buttons = []
+    for job in jobs:
+        job_id, site_name, scheduled_date, start_time, finish_time, status, area, _ = job
+        status_emoji = MessageTemplates.STATUS_EMOJIS.get(status.lower(), '❓')
+        duration = ""
+        if start_time and finish_time:
+            try:
+                start_dt = datetime.fromisoformat(start_time)
+                finish_dt = datetime.fromisoformat(finish_time)
+                duration = f" ({str(finish_dt - start_dt).split('.')[0]})"
+            except Exception:
+                pass
+        
+        buttons.append([
+            InlineKeyboardButton(
+                f"{status_emoji} {site_name}{duration}",
+                callback_data=f"view_job_{job_id}"
+            )
+        ])
+    return buttons
+
+def build_director_assign_jobs_page(page: int, context: CallbackContext) -> tuple:
+    """Build a page of jobs for assignment."""
+    jobs_per_page = 5
+    cursor.execute(
+        """
+        SELECT id, site_name, area, status 
+        FROM grounds_data 
+        WHERE assigned_to IS NULL 
+        ORDER BY id
+        LIMIT ? OFFSET ?
+        """,
+        (jobs_per_page, page * jobs_per_page)
+    )
+    jobs = cursor.fetchall()
+    
+    if not jobs:
+        return (
+            MessageTemplates.format_success_message(
+                "No Jobs Available",
+                "There are no unassigned jobs available."
+            ),
+            InlineKeyboardMarkup([[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]])
+        )
+    
+    selected_jobs = context.user_data.get("selected_jobs", set())
+    text_parts = [MessageTemplates.format_job_list_header("Available Jobs", len(jobs))]
+    
+    for job_id, site_name, area, status in jobs:
+        is_selected = site_name in selected_jobs
+        status_emoji = MessageTemplates.STATUS_EMOJIS.get(status.lower(), '❓')
+        text_parts.append(
+            f"{'✅' if is_selected else '⬜️'} {status_emoji} {site_name} ({area or 'No Area'})"
+        )
+    
+    # Add pagination buttons
+    keyboard = []
+    for job_id, site_name, area, status in jobs:
+        is_selected = site_name in selected_jobs
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{'✅' if is_selected else '⬜️'} {site_name}",
+                callback_data=f"toggle_job_{site_name}"
+            )
+        ])
+    
+    # Add navigation buttons
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"page_{page-1}"))
+    nav_buttons.append(InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard"))
+    if len(jobs) == jobs_per_page:
+        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}"))
+    keyboard.append(nav_buttons)
+    
+    # Add action buttons if jobs are selected
+    if selected_jobs:
+        keyboard.append([
+            InlineKeyboardButton("📝 Add Notes", callback_data="add_notes"),
+            InlineKeyboardButton("✅ Assign Selected", callback_data="assign_selected_jobs")
+        ])
+    
+    return "\n\n".join(text_parts), InlineKeyboardMarkup(keyboard)
+
+def view_job_photos(update: Update, context: CallbackContext):
+    """Handle viewing photos for a job."""
+    query = update.callback_query
+    job_id = query.data.split('_')[2]
+    
+    cursor.execute(
+        """
+        SELECT photos 
+        FROM grounds_data 
+        WHERE id = ?
+        """,
+        (job_id,)
+    )
     result = cursor.fetchone()
-    current = result[0] if result else ""
-    if current and current.strip():
-        new_photos = current.strip() + "|" + photo_path
-    else:
-        new_photos = photo_path
     
-    cursor.execute("UPDATE grounds_data SET photos = ? WHERE id = ?", (new_photos, job_id))
-    conn.commit()
+    if not result or not result[0]:
+        query.answer("No photos available for this job.")
+        return
     
-    photo_count = len(new_photos.split("|"))
-    max_photos = 25
-    confirmation_text = MessageTemplates.format_success_message(
-        "Photo uploaded",
-        f"Photo uploaded for Job {job_id}. ({photo_count}/{max_photos} photos uploaded)"
-    )
-    update.message.reply_text(confirmation_text)
-
-#######################################
-# JOB ASSIGNMENT & DAY SELECTION
-#######################################
-
-def director_select_day_for_assignment(update: Update, context: CallbackContext):
-    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    keyboard = []
-    for day in days:
-        keyboard.append([InlineKeyboardButton(day, callback_data=f"assign_day_{day}")])
-    keyboard.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")])
-    markup = InlineKeyboardMarkup(keyboard)
+    photo_paths = result[0].split('|')
+    media_group = []
     
-    current_hour = datetime.now().hour
-    greeting = "Good Morning" if current_hour < 12 else "Good Afternoon"
-    header = f"{greeting}! Please select a day of the week for assignment:"
-    safe_edit_text(update.callback_query.message, header, reply_markup=markup)
-
-def director_assign_day_selected(update: Update, context: CallbackContext):
-    selected_day = update.callback_query.data.split("_")[-1]
-    context.user_data["selected_day"] = selected_day
+    for path in photo_paths:
+        try:
+            with open(path.strip(), 'rb') as photo:
+                media_group.append(InputMediaPhoto(media=photo))
+        except Exception as e:
+            logger.error(f"Error loading photo {path}: {str(e)}")
+            continue
     
-    keyboard = []
-    for emp_id, emp_name in employee_users.items():
-        keyboard.append([InlineKeyboardButton(f"Assign to {emp_name}", callback_data=f"assign_to_{emp_id}")])
-    keyboard.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")])
-    markup = InlineKeyboardMarkup(keyboard)
+    if not media_group:
+        query.answer("Error loading photos. Please try again.")
+        return
     
-    message = MessageTemplates.format_success_message(
-        "Day Selected",
-        f"You selected {selected_day}. Please choose an employee to assign the selected jobs."
-    )
-    safe_edit_text(update.callback_query.message, message, reply_markup=markup)
-
-#######################################
-# DIRECTOR DASHBOARD
-#######################################
-
-def director_dashboard(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    name = employee_users.get(user_id, "Director")
-    
-    # Create dashboard header with stats
-    header = MessageTemplates.format_dashboard_header(name, "Director")
-    
-    # Get quick stats
-    total_jobs = len(cursor.execute("SELECT id FROM grounds_data").fetchall())
-    active_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'in_progress'").fetchall())
-    completed_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'completed'").fetchall())
-    
-    # Add stats to header
-    stats = [
-        f"📊 Today's Overview:",
-        f"• Total Jobs: {total_jobs}",
-        f"• Active: {active_jobs}",
-        f"• Completed: {completed_jobs}",
-        MessageTemplates.SEPARATOR
-    ]
-    
-    message = f"{header}\n\n" + "\n".join(stats)
-    markup = ButtonLayouts.create_director_dashboard(show_stats=True)
-    
-    if update.callback_query:
-        safe_edit_text(update.callback_query.message, message, reply_markup=markup)
-    else:
-        update.message.reply_text(message, reply_markup=markup)
-
-#######################################
-# DIRECTOR: View Employee Jobs
-#######################################
+    try:
+        context.bot.send_media_group(
+            chat_id=query.message.chat_id,
+            media=media_group,
+            caption=f"Photos for job #{job_id}"
+        )
+        query.answer()
+    except Exception as e:
+        logger.error(f"Error sending photos: {str(e)}")
+        query.answer("Error sending photos. Please try again.")
 
 def director_view_employee_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
     cursor.execute(
@@ -404,56 +544,6 @@ def director_view_employee_jobs(update: Update, context: CallbackContext, employ
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-def format_job_section(section_title: str, jobs: list) -> list:
-    """Format a section of jobs with consistent styling."""
-    status_emoji = MessageTemplates.STATUS_EMOJIS.get(jobs[0][5].lower(), '❓')
-    sections = [f"\n{status_emoji} {section_title} Jobs:"]
-    
-    for job in jobs:
-        job_id, site_name, scheduled_date, start_time, finish_time, status, area, notes = job
-        duration_str = "N/A"
-        if start_time and finish_time:
-            try:
-                start_dt = datetime.fromisoformat(start_time)
-                finish_dt = datetime.fromisoformat(finish_time)
-                duration = finish_dt - start_dt
-                duration_str = str(duration).split('.')[0]
-            except Exception:
-                duration_str = "N/A"
-        
-        sections.append(MessageTemplates.format_job_card(
-            site_name=site_name,
-            status=status,
-            area=area,
-            duration=duration_str,
-            notes=notes
-        ))
-    
-    return sections
-
-def create_job_buttons(jobs: list) -> list:
-    """Create interactive buttons for jobs with status indicators."""
-    buttons = []
-    for job in jobs:
-        job_id, site_name, scheduled_date, start_time, finish_time, status, area, _ = job
-        status_emoji = MessageTemplates.STATUS_EMOJIS.get(status.lower(), '❓')
-        duration = ""
-        if start_time and finish_time:
-            try:
-                start_dt = datetime.fromisoformat(start_time)
-                finish_dt = datetime.fromisoformat(finish_time)
-                duration = f" ({str(finish_dt - start_dt).split('.')[0]})"
-            except Exception:
-                pass
-        
-        buttons.append([
-            InlineKeyboardButton(
-                f"{status_emoji} {site_name}{duration}",
-                callback_data=f"view_job_{job_id}"
-            )
-        ])
-    return buttons
-
 def director_view_andys_jobs(update: Update, context: CallbackContext):
     director_view_employee_jobs(update, context, 1672989849, "Andy")
 
@@ -461,7 +551,348 @@ def director_view_alexs_jobs(update: Update, context: CallbackContext):
     director_view_employee_jobs(update, context, 6396234665, "Alex")
 
 #######################################
-# EMPLOYEE DASHBOARD & FEATURES
+# DEV FUNCTIONS
+#######################################
+
+def dev_dashboard(update: Update, context: CallbackContext):
+    """Developer dashboard with access to all roles."""
+    user_id = update.effective_user.id
+    name = employee_users.get(user_id, "Developer")
+    
+    # Create dashboard header with stats
+    header = MessageTemplates.format_dashboard_header(name, "Developer")
+    
+    # Get quick stats
+    total_jobs = len(cursor.execute("SELECT id FROM grounds_data").fetchall())
+    active_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'in_progress'").fetchall())
+    completed_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'completed'").fetchall())
+    
+    # Add stats to header
+    stats = [
+        f"📊 Today's Overview:",
+        f"• Total Jobs: {total_jobs}",
+        f"• Active: {active_jobs}",
+        f"• Completed: {completed_jobs}",
+        MessageTemplates.SEPARATOR
+    ]
+    
+    message = f"{header}\n\n" + "\n".join(stats)
+    markup = ButtonLayouts.create_dev_dashboard(show_stats=True)
+    
+    if update.callback_query:
+        safe_edit_text(update.callback_query.message, message, reply_markup=markup)
+    else:
+        update.message.reply_text(message, reply_markup=markup)
+
+def dev_director_dashboard(update: Update, context: CallbackContext):
+    """Developer access to director dashboard."""
+    director_dashboard(update, context)
+
+def dev_employee_dashboard(update: Update, context: CallbackContext):
+    """Developer access to employee dashboard."""
+    emp_employee_dashboard(update, context)
+
+#######################################
+# DIRECTOR FUNCTIONS
+#######################################
+
+def director_send_job(update: Update, context: CallbackContext):
+    job_id = int(update.callback_query.data.split("_")[-1])
+    cursor.execute(
+        """
+        SELECT site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area 
+        FROM grounds_data 
+        WHERE id = ?
+        """,
+        (job_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        safe_edit_text(update.callback_query.message, MessageTemplates.format_error_message("Job not found", code="JOB_404"))
+        return
+    
+    site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area = row
+    duration_str = "N/A"
+    if start_time and finish_time:
+        try:
+            start_dt = datetime.fromisoformat(start_time)
+            finish_dt = datetime.fromisoformat(finish_time)
+            duration = finish_dt - start_dt
+            duration_str = str(duration).split('.')[0]
+        except Exception as e:
+            duration_str = "N/A"
+    
+    # Format job information
+    sections = [
+        MessageTemplates.format_job_card(
+            site_name=site_name,
+            status="completed" if finish_time else "in_progress",
+            area=area,
+            duration=duration_str,
+            notes=notes
+        )
+    ]
+    
+    # Add site information if available
+    if contact or gate_code:
+        sections.append(MessageTemplates.format_site_info(
+            site_name=site_name,
+            contact=contact,
+            gate_code=gate_code,
+            address=None,
+            special_instructions=None
+        ))
+    
+    # Create button menu
+    keyboard = []
+    
+    # Photo viewing if available
+    if photos:
+        photos_list = photos.strip().split("|") if photos and photos.strip() else []
+        media_group = []
+        for p in photos_list:
+            abs_path = os.path.join(os.getcwd(), p.strip())
+            if os.path.exists(abs_path):
+                try:
+                    media_group.append(InputMediaPhoto(media=open(abs_path, 'rb')))
+                except Exception as e:
+                    logger.error(f"Error preparing photo for job {job_id}: {str(e)}")
+            else:
+                logger.warning(f"Photo file not found: {abs_path}")
+        
+        if media_group:
+            max_items = 10
+            chunks = [media_group[i:i + max_items] for i in range(0, len(media_group), max_items)]
+            for index, chunk in enumerate(chunks):
+                if index == 0:
+                    if len(chunk) == 1:
+                        update.callback_query.message.reply_photo(photo=chunk[0].media, caption="\n\n".join(sections), reply_markup=markup)
+                    else:
+                        update.callback_query.message.reply_media_group(media=chunk)
+                        update.callback_query.message.reply_text("\n\n".join(sections), reply_markup=markup)
+                else:
+                    update.callback_query.message.reply_media_group(media=chunk)
+        else:
+            safe_edit_text(update.callback_query.message, "\n\n".join(sections), reply_markup=markup)
+    else:
+        safe_edit_text(update.callback_query.message, "\n\n".join(sections), reply_markup=markup)
+
+def director_select_day_for_assignment(update: Update, context: CallbackContext):
+    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    keyboard = []
+    for day in days:
+        keyboard.append([InlineKeyboardButton(day, callback_data=f"assign_day_{day}")])
+    keyboard.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")])
+    markup = InlineKeyboardMarkup(keyboard)
+    
+    current_hour = datetime.now().hour
+    greeting = "Good Morning" if current_hour < 12 else "Good Afternoon"
+    header = f"{greeting}! Please select a day of the week for assignment:"
+    safe_edit_text(update.callback_query.message, header, reply_markup=markup)
+
+def director_assign_day_selected(update: Update, context: CallbackContext):
+    selected_day = update.callback_query.data.split("_")[-1]
+    context.user_data["selected_day"] = selected_day
+    
+    keyboard = []
+    for emp_id, emp_name in employee_users.items():
+        keyboard.append([InlineKeyboardButton(f"Assign to {emp_name}", callback_data=f"assign_to_{emp_id}")])
+    keyboard.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")])
+    markup = InlineKeyboardMarkup(keyboard)
+    
+    message = MessageTemplates.format_success_message(
+        "Day Selected",
+        f"You selected {selected_day}. Please choose an employee to assign the selected jobs."
+    )
+    safe_edit_text(update.callback_query.message, message, reply_markup=markup)
+
+def director_dashboard(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    name = employee_users.get(user_id, "Director")
+    
+    # Create dashboard header with stats
+    header = MessageTemplates.format_dashboard_header(name, "Director")
+    
+    # Get quick stats
+    total_jobs = len(cursor.execute("SELECT id FROM grounds_data").fetchall())
+    active_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'in_progress'").fetchall())
+    completed_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'completed'").fetchall())
+    
+    # Add stats to header
+    stats = [
+        f"📊 Today's Overview:",
+        f"• Total Jobs: {total_jobs}",
+        f"• Active: {active_jobs}",
+        f"• Completed: {completed_jobs}",
+        MessageTemplates.SEPARATOR
+    ]
+    
+    message = f"{header}\n\n" + "\n".join(stats)
+    markup = ButtonLayouts.create_director_dashboard(show_stats=True)
+    
+    if update.callback_query:
+        safe_edit_text(update.callback_query.message, message, reply_markup=markup)
+    else:
+        update.message.reply_text(message, reply_markup=markup)
+
+def director_add_notes(update: Update, context: CallbackContext):
+    """Handle adding notes to multiple jobs."""
+    if "selected_jobs" not in context.user_data or not context.user_data["selected_jobs"]:
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_error_message(
+                "No Jobs Selected",
+                "Please select jobs before adding notes.",
+                code="NO_JOBS_SELECTED"
+            )
+        )
+        return
+    
+    context.user_data["awaiting_notes"] = True
+    keyboard = [
+        [InlineKeyboardButton(f"{ButtonLayouts.CANCEL_PREFIX} Cancel", callback_data="director_dashboard")]
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
+    safe_edit_text(
+        update.callback_query.message,
+        MessageTemplates.format_input_prompt("Please send the notes to add to the selected jobs:")
+    )
+
+def director_edit_note(update: Update, context: CallbackContext):
+    job_id = int(update.callback_query.data.split("_")[-1])
+    try:
+        # Check if job exists
+        cursor.execute("SELECT site_name FROM grounds_data WHERE id = ?", (job_id,))
+        result = cursor.fetchone()
+        if not result:
+            safe_edit_text(
+                update.callback_query.message,
+                MessageTemplates.format_error_message("Job not found", code="JOB_404")
+            )
+            return
+        
+        site_name = result[0]
+        context.user_data["awaiting_note_for"] = job_id
+        keyboard = [
+            [InlineKeyboardButton(f"{ButtonLayouts.CANCEL_PREFIX} Cancel", callback_data=f"cancel_note_{job_id}")]
+        ]
+        markup = InlineKeyboardMarkup(keyboard)
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_input_prompt(f"Please send the note for {site_name} (Job {job_id}):")
+        )
+    except sqlite3.Error as e:
+        logger.error(f"Database error while preparing note edit: {str(e)}")
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_error_message(
+                "Database Error",
+                "Failed to prepare note editing. Please try again.",
+                code="DB_ERROR"
+            )
+        )
+
+def director_cancel_note(update: Update, context: CallbackContext):
+    director_send_job(update, context)
+
+def director_assign_jobs(update: Update, context: CallbackContext):
+    """Handle the job assignment process."""
+    if "selected_jobs" not in context.user_data or not context.user_data["selected_jobs"]:
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_error_message(
+                "No Jobs Selected",
+                "Please select jobs before assigning.",
+                code="NO_JOBS_SELECTED"
+            )
+        )
+        return
+    
+    # Clear any previous state
+    if "selected_day" in context.user_data:
+        del context.user_data["selected_day"]
+    if "awaiting_notes" in context.user_data:
+        del context.user_data["awaiting_notes"]
+    
+    keyboard = []
+    for emp_id, emp_name in employee_users.items():
+        keyboard.append([InlineKeyboardButton(f"Assign to {emp_name}", callback_data=f"assign_to_{emp_id}")])
+    keyboard.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")])
+    markup = InlineKeyboardMarkup(keyboard)
+    
+    message = MessageTemplates.format_success_message(
+        "Select Employee",
+        "Please choose an employee to assign the selected jobs."
+    )
+    safe_edit_text(update.callback_query.message, message, reply_markup=markup)
+
+def assign_jobs_to_employee(update: Update, context: CallbackContext):
+    """Assign selected jobs to an employee."""
+    employee_id = int(update.callback_query.data.split("_")[-1])
+    selected_jobs = context.user_data.get("selected_jobs", set())
+    selected_day = context.user_data.get("selected_day")
+    
+    if not selected_jobs:
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_error_message(
+                "No Jobs Selected",
+                "Please select jobs before assigning.",
+                code="NO_JOBS_SELECTED"
+            )
+        )
+        return
+    
+    if not selected_day:
+        # If no day is selected, go to day selection
+        director_select_day_for_assignment(update, context)
+        return
+    
+    try:
+        for site_name in selected_jobs:
+            cursor.execute(
+                "UPDATE grounds_data SET assigned_to = ?, scheduled_date = ? WHERE site_name = ?",
+                (employee_id, selected_day, site_name)
+            )
+        conn.commit()
+        
+        message = MessageTemplates.format_success_message(
+            "Jobs Assigned",
+            f"Selected jobs have been assigned to {employee_users.get(employee_id, 'Employee')} for {selected_day}."
+        )
+        safe_edit_text(update.callback_query.message, message)
+        
+        # Clear selection state
+        if "selected_jobs" in context.user_data:
+            del context.user_data["selected_jobs"]
+        if "selected_day" in context.user_data:
+            del context.user_data["selected_day"]
+        
+        director_dashboard(update, context)
+    except sqlite3.Error as e:
+        logger.error(f"Database error while assigning jobs: {str(e)}")
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_error_message(
+                "Database Error",
+                "Failed to assign jobs. Please try again.",
+                code="DB_ERROR"
+            )
+        )
+
+def director_calendar_view(update: Update, context: CallbackContext):
+    text = MessageTemplates.format_success_message(
+        "Calendar View",
+        "Calendar View: [Feature coming soon - This is a stub]"
+    )
+    keyboard = [
+        [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
+    safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+
+#######################################
+# EMPLOYEE FUNCTIONS
 #######################################
 
 def emp_employee_dashboard(update: Update, context: CallbackContext):
@@ -540,7 +971,7 @@ def emp_job_menu(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
         """
-        SELECT site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link 
+        SELECT site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos 
         FROM grounds_data 
         WHERE id = ?
         """,
@@ -555,7 +986,7 @@ def emp_job_menu(update: Update, context: CallbackContext):
         )
         return
     
-    site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link = job_data
+    site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos = job_data
     
     # Format job information
     sections = [
@@ -579,12 +1010,27 @@ def emp_job_menu(update: Update, context: CallbackContext):
         ))
     
     # Create context-aware button menu
-    markup = ButtonLayouts.create_job_menu(
-        job_id=job_id,
-        status=status,
-        has_photos=False,  # You might want to check this from the database
-        has_notes=bool(notes)
-    )
+    keyboard = []
+    
+    # Status buttons based on current status
+    if status == 'pending':
+        keyboard.append([InlineKeyboardButton("▶️ Start Job", callback_data=f"start_job_{job_id}")])
+    elif status == 'in_progress':
+        keyboard.append([InlineKeyboardButton("✅ Finish Job", callback_data=f"finish_job_{job_id}")])
+    
+    # Photo upload button
+    keyboard.append([InlineKeyboardButton("📸 Upload Photo", callback_data=f"upload_photo_{job_id}")])
+    
+    # Site info and map buttons if available
+    if contact or gate_code:
+        keyboard.append([InlineKeyboardButton("ℹ️ Site Info", callback_data=f"site_info_{job_id}")])
+    if map_link:
+        keyboard.append([InlineKeyboardButton("🗺 Map Link", callback_data=f"map_link_{job_id}")])
+    
+    # Back button
+    keyboard.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="emp_view_jobs")])
+    
+    markup = InlineKeyboardMarkup(keyboard)
     
     safe_edit_text(
         update.callback_query.message,
@@ -594,96 +1040,195 @@ def emp_job_menu(update: Update, context: CallbackContext):
 
 def emp_start_job(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
-    cursor.execute(
-        "UPDATE grounds_data SET status = 'in_progress', start_time = ? WHERE id = ?",
-        (datetime.now().isoformat(), job_id)
-    )
-    conn.commit()
-    
-    safe_edit_text(
-        update.callback_query.message,
-        MessageTemplates.format_success_message(
-            "Job Started",
-            f"Job {job_id} has been started."
+    try:
+        # Check if job is already started
+        cursor.execute("SELECT status FROM grounds_data WHERE id = ?", (job_id,))
+        result = cursor.fetchone()
+        if not result:
+            safe_edit_text(
+                update.callback_query.message,
+                MessageTemplates.format_error_message("Job not found", code="JOB_404")
+            )
+            return
+        
+        current_status = result[0]
+        if current_status == 'in_progress':
+            safe_edit_text(
+                update.callback_query.message,
+                MessageTemplates.format_error_message(
+                    "Already Started",
+                    "This job is already in progress.",
+                    code="JOB_IN_PROGRESS"
+                )
+            )
+            return
+        
+        # Update job status
+        cursor.execute(
+            "UPDATE grounds_data SET status = 'in_progress', start_time = ? WHERE id = ?",
+            (datetime.now().isoformat(), job_id)
         )
-    )
-    emp_view_jobs(update, context)
+        conn.commit()
+        
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_success_message(
+                "Job Started",
+                f"Job {job_id} has been started."
+            )
+        )
+        emp_view_jobs(update, context)
+    except sqlite3.Error as e:
+        logger.error(f"Database error while starting job: {str(e)}")
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_error_message(
+                "Database Error",
+                "Failed to start job. Please try again.",
+                code="DB_ERROR"
+            )
+        )
 
 def emp_finish_job(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
-    cursor.execute(
-        "UPDATE grounds_data SET status = 'completed', finish_time = ? WHERE id = ?",
-        (datetime.now().isoformat(), job_id)
-    )
-    conn.commit()
-    
-    safe_edit_text(
-        update.callback_query.message,
-        MessageTemplates.format_success_message(
-            "Job Completed",
-            f"Job {job_id} has been completed."
+    try:
+        # Check if job is already completed
+        cursor.execute("SELECT status FROM grounds_data WHERE id = ?", (job_id,))
+        result = cursor.fetchone()
+        if not result:
+            safe_edit_text(
+                update.callback_query.message,
+                MessageTemplates.format_error_message("Job not found", code="JOB_404")
+            )
+            return
+        
+        current_status = result[0]
+        if current_status == 'completed':
+            safe_edit_text(
+                update.callback_query.message,
+                MessageTemplates.format_error_message(
+                    "Already Completed",
+                    "This job is already completed.",
+                    code="JOB_COMPLETED"
+                )
+            )
+            return
+        
+        if current_status != 'in_progress':
+            safe_edit_text(
+                update.callback_query.message,
+                MessageTemplates.format_error_message(
+                    "Not Started",
+                    "This job has not been started yet.",
+                    code="JOB_NOT_STARTED"
+                )
+            )
+            return
+        
+        # Update job status
+        cursor.execute(
+            "UPDATE grounds_data SET status = 'completed', finish_time = ? WHERE id = ?",
+            (datetime.now().isoformat(), job_id)
         )
-    )
-    emp_view_jobs(update, context)
+        conn.commit()
+        
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_success_message(
+                "Job Completed",
+                f"Job {job_id} has been completed."
+            )
+        )
+        emp_view_jobs(update, context)
+    except sqlite3.Error as e:
+        logger.error(f"Database error while finishing job: {str(e)}")
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_error_message(
+                "Database Error",
+                "Failed to complete job. Please try again.",
+                code="DB_ERROR"
+            )
+        )
 
-#######################################
-# NOTE EDITING FUNCTIONALITY
-#######################################
-
-def director_edit_note(update: Update, context: CallbackContext):
+def emp_upload_photo(update: Update, context: CallbackContext):
+    """Handle photo upload request for a job."""
     job_id = int(update.callback_query.data.split("_")[-1])
-    context.user_data["awaiting_note_for"] = job_id
+    context.user_data["awaiting_photo_for"] = job_id
     keyboard = [
-        [InlineKeyboardButton(f"{ButtonLayouts.CANCEL_PREFIX} Cancel", callback_data=f"cancel_note_{job_id}")]
+        [InlineKeyboardButton(f"{ButtonLayouts.CANCEL_PREFIX} Cancel", callback_data=f"job_menu_{job_id}")]
     ]
     markup = InlineKeyboardMarkup(keyboard)
     safe_edit_text(
         update.callback_query.message,
-        MessageTemplates.format_input_prompt("Please send the note for Job {job_id}:")
+        MessageTemplates.format_input_prompt("Please send the photo for this job:")
     )
 
-def director_cancel_note(update: Update, context: CallbackContext):
-    director_send_job(update, context)
+def emp_site_info(update: Update, context: CallbackContext):
+    """Display site information for a job."""
+    job_id = int(update.callback_query.data.split("_")[-1])
+    cursor.execute(
+        "SELECT site_name, contact, gate_code, address FROM grounds_data WHERE id = ?",
+        (job_id,)
+    )
+    job_data = cursor.fetchone()
+    
+    if not job_data:
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_error_message("Job not found", code="JOB_404")
+        )
+        return
+    
+    site_name, contact, gate_code, address = job_data
+    info_text = MessageTemplates.format_site_info(
+        site_name=site_name,
+        contact=contact,
+        gate_code=gate_code,
+        address=address,
+        special_instructions=None
+    )
+    
+    keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data=f"job_menu_{job_id}")]]
+    markup = InlineKeyboardMarkup(keyboard)
+    safe_edit_text(update.callback_query.message, info_text, reply_markup=markup)
 
-#######################################
-# TEXT HANDLER
-#######################################
-
-def handle_text(update: Update, context: CallbackContext):
-    if "awaiting_note_for" in context.user_data:
-        job_id = context.user_data.pop("awaiting_note_for")
-        note = update.message.text
-        cursor.execute("UPDATE grounds_data SET notes = ? WHERE id = ?", (note, job_id))
-        conn.commit()
-        update.message.reply_text(
-            MessageTemplates.format_success_message(
-                "Note Updated",
-                f"Note updated for Job {job_id}."
+def emp_map_link(update: Update, context: CallbackContext):
+    """Handle map link request for a job."""
+    job_id = int(update.callback_query.data.split("_")[-1])
+    cursor.execute("SELECT site_name, map_link FROM grounds_data WHERE id = ?", (job_id,))
+    job_data = cursor.fetchone()
+    
+    if not job_data:
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_error_message("Job not found", code="JOB_404")
+        )
+        return
+    
+    site_name, map_link = job_data
+    if not map_link:
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_error_message(
+                "No Map Link",
+                "No map link available for this job.",
+                code="NO_MAP_LINK"
             )
         )
         return
     
-    if "awaiting_notes" in context.user_data and context.user_data["awaiting_notes"]:
-        notes = update.message.text
-        selected_jobs = context.user_data.get("selected_jobs", set())
-        for site_name in selected_jobs:
-            cursor.execute("SELECT id FROM grounds_data WHERE site_name = ?", (site_name,))
-            job = cursor.fetchone()
-            if job:
-                cursor.execute("UPDATE grounds_data SET notes = ? WHERE id = ?", (notes, job[0]))
-        conn.commit()
-        update.message.reply_text(
-            MessageTemplates.format_success_message(
-                "Notes Added",
-                f"Notes added to {len(selected_jobs)} job(s)."
-            )
-        )
-        director_assign_jobs(update, context)
+    keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data=f"job_menu_{job_id}")]]
+    markup = InlineKeyboardMarkup(keyboard)
+    safe_edit_text(
+        update.callback_query.message,
+        f"🗺 Map Link for {site_name}:\n{map_link}",
+        reply_markup=markup
+    )
 
 #######################################
 # CALLBACK QUERY HANDLER
 #######################################
-
 def callback_handler(update: Update, context: CallbackContext):
     data = update.callback_query.data
     update.callback_query.answer()
@@ -699,7 +1244,8 @@ def callback_handler(update: Update, context: CallbackContext):
         "emp_view_jobs": emp_view_jobs,
         "emp_employee_dashboard": emp_employee_dashboard,
         "add_notes": director_add_notes,
-        "dir_assign_jobs": director_assign_jobs
+        "dir_assign_jobs": director_assign_jobs,
+        "assign_selected_jobs": director_select_day_for_assignment
     }
     
     # Handle direct matches
@@ -710,14 +1256,10 @@ def callback_handler(update: Update, context: CallbackContext):
     # Handle prefixed matches
     if data.startswith("select_day_"):
         director_select_day_for_assignment(update, context)
-    elif data == "select_day_for_assignment":
-        director_select_day_for_assignment(update, context)
     elif data.startswith("assign_day_"):
         director_assign_day_selected(update, context)
     elif data.startswith("dir_assign_jobs_"):
         director_assign_jobs(update, context)
-    elif data == "assign_selected_jobs":
-        director_select_day_for_assignment(update, context)
     elif data.startswith("toggle_job_"):
         handle_toggle_job(update, context)
     elif data.startswith("assign_to_"):
@@ -740,92 +1282,40 @@ def callback_handler(update: Update, context: CallbackContext):
         director_edit_note(update, context)
     elif data.startswith("cancel_note_"):
         director_cancel_note(update, context)
+    elif data.startswith("view_job_"):
+        director_send_job(update, context)
+    elif data.startswith("view_photos_"):
+        view_job_photos(update, context)
     elif data.startswith("page_"):
         page = int(data.split("_")[-1])
+        context.user_data["current_page"] = page
         text, markup = build_director_assign_jobs_page(page, context)
         safe_edit_text(update.callback_query.message, text, reply_markup=markup)
     elif data == "noop":
         pass
-
-def handle_toggle_job(update: Update, context: CallbackContext):
-    site_name = update.callback_query.data.split("_", 2)[-1]
-    if "selected_jobs" not in context.user_data:
-        context.user_data["selected_jobs"] = set()
-    selected_jobs = context.user_data["selected_jobs"]
-    
-    if site_name in selected_jobs:
-        selected_jobs.remove(site_name)
     else:
-        selected_jobs.add(site_name)
-    
-    logger.info(f"Toggled {site_name} - selected_jobs now: {selected_jobs}")
-    page = context.user_data.get("current_page", 0)
-    text, markup = build_director_assign_jobs_page(page, context)
-    safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+        # Handle unknown callback data gracefully
+        safe_edit_text(
+            update.callback_query.message,
+            MessageTemplates.format_error_message(
+                "Unknown Action",
+                "This action is not supported.",
+                code="UNKNOWN_ACTION"
+            )
+        )
 
 #######################################
-# DEV DASHBOARD FUNCTIONS
+# DAILY RESET FUNCTION
 #######################################
 
-def dev_dashboard(update: Update, context: CallbackContext):
-    text = MessageTemplates.format_dashboard_header("Developer", "Dev")
-    keyboard = [
-        [InlineKeyboardButton("Director Dashboard", callback_data="dev_director_dashboard")],
-        [InlineKeyboardButton("Employee Dashboard", callback_data="dev_employee_dashboard")],
-        [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back to Start", callback_data="start")]
-    ]
-    markup = InlineKeyboardMarkup(keyboard)
-    
-    if update.callback_query:
-        safe_edit_text(update.callback_query.message, text, reply_markup=markup)
-    else:
-        update.message.reply_text(text, reply_markup=markup)
-
-def dev_director_dashboard(update: Update, context: CallbackContext):
-    text = MessageTemplates.format_dashboard_header("Developer Director", "Dev")
-    keyboard = [
-        [InlineKeyboardButton("Director Dashboard", callback_data="director_dashboard")],
-        [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back to Dev Dashboard", callback_data="dev_dashboard")]
-    ]
-    markup = InlineKeyboardMarkup(keyboard)
-    
-    if update.callback_query:
-        safe_edit_text(update.callback_query.message, text, reply_markup=markup)
-    else:
-        update.message.reply_text(text, reply_markup=markup)
-
-def dev_employee_dashboard(update: Update, context: CallbackContext):
-    text = MessageTemplates.format_dashboard_header("Developer Employee", "Dev")
-    keyboard = [
-        [InlineKeyboardButton("Employee Dashboard", callback_data="emp_employee_dashboard")],
-        [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back to Dev Dashboard", callback_data="dev_dashboard")]
-    ]
-    markup = InlineKeyboardMarkup(keyboard)
-    
-    if update.callback_query:
-        safe_edit_text(update.callback_query.message, text, reply_markup=markup)
-    else:
-        update.message.reply_text(text, reply_markup=markup)
-
-#######################################
-# DIRECTOR CALENDAR VIEW
-#######################################
-
-def director_calendar_view(update: Update, context: CallbackContext):
-    text = MessageTemplates.format_success_message(
-        "Calendar View",
-        "Calendar View: [Feature coming soon - This is a stub]"
-    )
-    keyboard = [
-        [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]
-    ]
-    markup = InlineKeyboardMarkup(keyboard)
-    safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+def reset_completed_jobs():
+    logger.info("Resetting completed jobs for a new day.")
+    cursor.execute("UPDATE grounds_data SET status = 'pending', assigned_to = NULL, finish_time = NULL WHERE status = 'completed' AND (scheduled_date IS NULL OR scheduled_date = date('now','localtime'))")
+    conn.commit()
 
 #######################################
 # START COMMAND
 #######################################
-
 def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     role = get_user_role(user_id)
@@ -850,7 +1340,6 @@ def start(update: Update, context: CallbackContext):
 #######################################
 # HELP COMMAND
 #######################################
-
 def help_command(update: Update, context: CallbackContext):
     text = (
         "🤖 *Bot Help*\n\n"
