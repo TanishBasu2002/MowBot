@@ -648,31 +648,31 @@ def director_send_job(update: Update, context: CallbackContext):
     
     # Photo viewing if available
     if photos:
-        photos_list = photos.strip().split("|") if photos and photos.strip() else []
-        media_group = []
-        for p in photos_list:
-            abs_path = os.path.join(os.getcwd(), p.strip())
-            if os.path.exists(abs_path):
-                try:
-                    media_group.append(InputMediaPhoto(media=open(abs_path, 'rb')))
-                except Exception as e:
-                    logger.error(f"Error preparing photo for job {job_id}: {str(e)}")
-            else:
-                logger.warning(f"Photo file not found: {abs_path}")
-        
-        if media_group:
-            max_items = 10
-            chunks = [media_group[i:i + max_items] for i in range(0, len(media_group), max_items)]
-            for index, chunk in enumerate(chunks):
-                if index == 0:
-                    if len(chunk) == 1:
+    photos_list = photos.strip().split("|") if photos and photos.strip() else []
+    media_group = []
+    for p in photos_list:
+        abs_path = os.path.join(os.getcwd(), p.strip())
+        if os.path.exists(abs_path):
+            try:
+                media_group.append(InputMediaPhoto(media=open(abs_path, 'rb')))
+            except Exception as e:
+                logger.error(f"Error preparing photo for job {job_id}: {str(e)}")
+        else:
+            logger.warning(f"Photo file not found: {abs_path}")
+    
+    if media_group:
+        max_items = 10
+        chunks = [media_group[i:i + max_items] for i in range(0, len(media_group), max_items)]
+        for index, chunk in enumerate(chunks):
+            if index == 0:
+                if len(chunk) == 1:
                         update.callback_query.message.reply_photo(photo=chunk[0].media, caption="\n\n".join(sections), reply_markup=markup)
-                    else:
+                else:
                         update.callback_query.message.reply_media_group(media=chunk)
                         update.callback_query.message.reply_text("\n\n".join(sections), reply_markup=markup)
-                else:
+            else:
                     update.callback_query.message.reply_media_group(media=chunk)
-        else:
+    else:
             safe_edit_text(update.callback_query.message, "\n\n".join(sections), reply_markup=markup)
     else:
         safe_edit_text(update.callback_query.message, "\n\n".join(sections), reply_markup=markup)
@@ -849,12 +849,12 @@ def assign_jobs_to_employee(update: Update, context: CallbackContext):
         return
     
     try:
-        for site_name in selected_jobs:
+    for site_name in selected_jobs:
             cursor.execute(
                 "UPDATE grounds_data SET assigned_to = ?, scheduled_date = ? WHERE site_name = ?",
                 (employee_id, selected_day, site_name)
             )
-        conn.commit()
+    conn.commit()
         
         message = MessageTemplates.format_success_message(
             "Jobs Assigned",
@@ -1061,14 +1061,14 @@ def emp_start_job(update: Update, context: CallbackContext):
                     code="JOB_IN_PROGRESS"
                 )
             )
-            return
+        return
         
         # Update job status
         cursor.execute(
             "UPDATE grounds_data SET status = 'in_progress', start_time = ? WHERE id = ?",
             (datetime.now().isoformat(), job_id)
         )
-        conn.commit()
+    conn.commit()
         
         safe_edit_text(
             update.callback_query.message,
@@ -1130,7 +1130,7 @@ def emp_finish_job(update: Update, context: CallbackContext):
             "UPDATE grounds_data SET status = 'completed', finish_time = ? WHERE id = ?",
             (datetime.now().isoformat(), job_id)
         )
-        conn.commit()
+    conn.commit()
         
         safe_edit_text(
             update.callback_query.message,
@@ -1385,6 +1385,6 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+    main()
     except KeyboardInterrupt:
         pass
