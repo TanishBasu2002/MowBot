@@ -148,22 +148,22 @@ except sqlite3.OperationalError as e:
 # HELPER: Safe Edit Text Function
 #######################################
 
-async def safe_edit_text(message, text, reply_markup=None):
+def safe_edit_text(message, text, reply_markup=None):
     """Attempt to edit a message; if it fails, send a new message."""
     try:
         if message.text and message.text.strip():
-            return await message.edit_text(text, reply_markup=reply_markup)
+            return message.edit_text(text, reply_markup=reply_markup)
         else:
-            return await message.reply_text(text, reply_markup=reply_markup)
+            return message.reply_text(text, reply_markup=reply_markup)
     except BadRequest as e:
         logger.error(f"safe_edit_text error: {str(e)}")
-        return await message.reply_text(text, reply_markup=reply_markup)
+        return message.reply_text(text, reply_markup=reply_markup)
 
 #######################################
 # DAILY RESET FUNCTION
 #######################################
 
-async def reset_completed_jobs():
+def reset_completed_jobs():
     logger.info("Resetting completed jobs for a new day.")
     cursor.execute("UPDATE grounds_data SET status = 'pending', assigned_to = NULL, finish_time = NULL WHERE status = 'completed' AND (scheduled_date IS NULL OR scheduled_date = date('now','localtime'))")
     conn.commit()
@@ -172,12 +172,12 @@ async def reset_completed_jobs():
 # PHOTO UPLOAD ENHANCEMENT
 #######################################
 
-async def director_send_job(update: Update, context: CallbackContext):
+def director_send_job(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute("SELECT site_name, photos, start_time, finish_time, notes FROM grounds_data WHERE id = ?", (job_id,))
     row = cursor.fetchone()
     if not row:
-        await safe_edit_text(update.callback_query.message, MessageTemplates.format_error_message("Job not found", code="JOB_404"))
+        safe_edit_text(update.callback_query.message, MessageTemplates.format_error_message("Job not found", code="JOB_404"))
         return
     
     site_name, photos, start_time, finish_time, notes = row
@@ -224,21 +224,21 @@ async def director_send_job(update: Update, context: CallbackContext):
         for index, chunk in enumerate(chunks):
             if index == 0:
                 if len(chunk) == 1:
-                    await update.callback_query.message.reply_photo(photo=chunk[0].media, caption=detail_text, reply_markup=markup)
+                    update.callback_query.message.reply_photo(photo=chunk[0].media, caption=detail_text, reply_markup=markup)
                 else:
-                    await update.callback_query.message.reply_media_group(media=chunk)
-                    await update.callback_query.message.reply_text(detail_text, reply_markup=markup)
+                    update.callback_query.message.reply_media_group(media=chunk)
+                    update.callback_query.message.reply_text(detail_text, reply_markup=markup)
             else:
-                await update.callback_query.message.reply_media_group(media=chunk)
+                update.callback_query.message.reply_media_group(media=chunk)
     else:
-        await safe_edit_text(update.callback_query.message, detail_text, reply_markup=markup)
+        safe_edit_text(update.callback_query.message, detail_text, reply_markup=markup)
 
-async def handle_photo(update: Update, context: CallbackContext):
+def handle_photo(update: Update, context: CallbackContext):
     if "awaiting_photo_for" not in context.user_data:
         return
     
     job_id = context.user_data["awaiting_photo_for"]
-    photo_file = await update.message.photo[-1].get_file()
+    photo_file = update.message.photo[-1].get_file()
     photo_dir = "photos"
     os.makedirs(photo_dir, exist_ok=True)
     photo_filename = f"job_{job_id}_{photo_file.file_id}.jpg"
@@ -246,7 +246,7 @@ async def handle_photo(update: Update, context: CallbackContext):
     
     try:
         # Download the photo to memory first
-        photo_bytes = await photo_file.download_as_bytearray()
+        photo_bytes = photo_file.download_as_bytearray()
         
         # Verify and save the image using PIL
         with Image.open(io.BytesIO(photo_bytes)) as img:
@@ -254,7 +254,7 @@ async def handle_photo(update: Update, context: CallbackContext):
             img.save(photo_path, format='JPEG')
     except Exception as e:
         logger.error(f"Error processing photo: {str(e)}")
-        await update.message.reply_text(
+        update.message.reply_text(
             MessageTemplates.format_error_message(
                 "Photo Error",
                 "Failed to process the photo. Please try again.",
@@ -280,13 +280,13 @@ async def handle_photo(update: Update, context: CallbackContext):
         "Photo uploaded",
         f"Photo uploaded for Job {job_id}. ({photo_count}/{max_photos} photos uploaded)"
     )
-    await update.message.reply_text(confirmation_text)
+    update.message.reply_text(confirmation_text)
 
 #######################################
 # JOB ASSIGNMENT & DAY SELECTION
 #######################################
 
-async def director_select_day_for_assignment(update: Update, context: CallbackContext):
+def director_select_day_for_assignment(update: Update, context: CallbackContext):
     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     keyboard = []
     for day in days:
@@ -297,9 +297,9 @@ async def director_select_day_for_assignment(update: Update, context: CallbackCo
     current_hour = datetime.now().hour
     greeting = "Good Morning" if current_hour < 12 else "Good Afternoon"
     header = f"{greeting}! Please select a day of the week for assignment:"
-    await safe_edit_text(update.callback_query.message, header, reply_markup=markup)
+    safe_edit_text(update.callback_query.message, header, reply_markup=markup)
 
-async def director_assign_day_selected(update: Update, context: CallbackContext):
+def director_assign_day_selected(update: Update, context: CallbackContext):
     selected_day = update.callback_query.data.split("_")[-1]
     context.user_data["selected_day"] = selected_day
     
@@ -313,13 +313,13 @@ async def director_assign_day_selected(update: Update, context: CallbackContext)
         "Day Selected",
         f"You selected {selected_day}. Please choose an employee to assign the selected jobs."
     )
-    await safe_edit_text(update.callback_query.message, message, reply_markup=markup)
+    safe_edit_text(update.callback_query.message, message, reply_markup=markup)
 
 #######################################
 # DIRECTOR DASHBOARD
 #######################################
 
-async def director_dashboard(update: Update, context: CallbackContext):
+def director_dashboard(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     name = employee_users.get(user_id, "Director")
     
@@ -344,15 +344,15 @@ async def director_dashboard(update: Update, context: CallbackContext):
     markup = ButtonLayouts.create_director_dashboard(show_stats=True)
     
     if update.callback_query:
-        await safe_edit_text(update.callback_query.message, message, reply_markup=markup)
+        safe_edit_text(update.callback_query.message, message, reply_markup=markup)
     else:
-        await update.message.reply_text(message, reply_markup=markup)
+        update.message.reply_text(message, reply_markup=markup)
 
 #######################################
 # DIRECTOR: View Employee Jobs
 #######################################
 
-async def director_view_employee_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
+def director_view_employee_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
     cursor.execute(
         """
         SELECT id, site_name, scheduled_date, start_time, finish_time, status, area, notes 
@@ -365,7 +365,7 @@ async def director_view_employee_jobs(update: Update, context: CallbackContext, 
     jobs = cursor.fetchall()
     
     if not jobs:
-        await safe_edit_text(
+        safe_edit_text(
             update.callback_query.message,
             MessageTemplates.format_success_message(
                 "No Jobs",
@@ -398,7 +398,7 @@ async def director_view_employee_jobs(update: Update, context: CallbackContext, 
         InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")
     ])
     
-    await safe_edit_text(
+    safe_edit_text(
         update.callback_query.message,
         "\n\n".join(sections),
         reply_markup=InlineKeyboardMarkup(buttons)
@@ -454,17 +454,17 @@ def create_job_buttons(jobs: list) -> list:
         ])
     return buttons
 
-async def director_view_andys_jobs(update: Update, context: CallbackContext):
-    await director_view_employee_jobs(update, context, 1672989849, "Andy")
+def director_view_andys_jobs(update: Update, context: CallbackContext):
+    director_view_employee_jobs(update, context, 1672989849, "Andy")
 
-async def director_view_alexs_jobs(update: Update, context: CallbackContext):
-    await director_view_employee_jobs(update, context, 6396234665, "Alex")
+def director_view_alexs_jobs(update: Update, context: CallbackContext):
+    director_view_employee_jobs(update, context, 6396234665, "Alex")
 
 #######################################
 # EMPLOYEE DASHBOARD & FEATURES
 #######################################
 
-async def emp_employee_dashboard(update: Update, context: CallbackContext):
+def emp_employee_dashboard(update: Update, context: CallbackContext):
     if "awaiting_photo_for" in context.user_data:
         del context.user_data["awaiting_photo_for"]
     
@@ -481,11 +481,11 @@ async def emp_employee_dashboard(update: Update, context: CallbackContext):
     )
     
     if update.callback_query:
-        await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+        safe_edit_text(update.callback_query.message, text, reply_markup=markup)
     elif update.message:
-        await update.message.reply_text(text, reply_markup=markup)
+        update.message.reply_text(text, reply_markup=markup)
 
-async def emp_view_jobs(update: Update, context: CallbackContext):
+def emp_view_jobs(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     cursor.execute(
         """
@@ -503,9 +503,9 @@ async def emp_view_jobs(update: Update, context: CallbackContext):
             "You have no assigned jobs today."
         )
         if update.callback_query:
-            await safe_edit_text(update.callback_query.message, message)
+            safe_edit_text(update.callback_query.message, message)
         elif update.message:
-            await update.message.reply_text(message)
+            update.message.reply_text(message)
         return
     
     keyboard = []
@@ -532,11 +532,11 @@ async def emp_view_jobs(update: Update, context: CallbackContext):
     
     message = MessageTemplates.format_job_list_header("Your Jobs (Today)", len(jobs))
     if update.callback_query:
-        await safe_edit_text(update.callback_query.message, message, reply_markup=markup)
+        safe_edit_text(update.callback_query.message, message, reply_markup=markup)
     elif update.message:
-        await update.message.reply_text(message, reply_markup=markup)
+        update.message.reply_text(message, reply_markup=markup)
 
-async def emp_job_menu(update: Update, context: CallbackContext):
+def emp_job_menu(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
         """
@@ -549,7 +549,7 @@ async def emp_job_menu(update: Update, context: CallbackContext):
     job_data = cursor.fetchone()
     
     if not job_data:
-        await safe_edit_text(
+        safe_edit_text(
             update.callback_query.message,
             MessageTemplates.format_error_message("Job not found", code="JOB_404")
         )
@@ -586,13 +586,13 @@ async def emp_job_menu(update: Update, context: CallbackContext):
         has_notes=bool(notes)
     )
     
-    await safe_edit_text(
+    safe_edit_text(
         update.callback_query.message,
         "\n\n".join(sections),
         reply_markup=markup
     )
 
-async def emp_start_job(update: Update, context: CallbackContext):
+def emp_start_job(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
         "UPDATE grounds_data SET status = 'in_progress', start_time = ? WHERE id = ?",
@@ -600,16 +600,16 @@ async def emp_start_job(update: Update, context: CallbackContext):
     )
     conn.commit()
     
-    await safe_edit_text(
+    safe_edit_text(
         update.callback_query.message,
         MessageTemplates.format_success_message(
             "Job Started",
             f"Job {job_id} has been started."
         )
     )
-    await emp_view_jobs(update, context)
+    emp_view_jobs(update, context)
 
-async def emp_finish_job(update: Update, context: CallbackContext):
+def emp_finish_job(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
         "UPDATE grounds_data SET status = 'completed', finish_time = ? WHERE id = ?",
@@ -617,45 +617,45 @@ async def emp_finish_job(update: Update, context: CallbackContext):
     )
     conn.commit()
     
-    await safe_edit_text(
+    safe_edit_text(
         update.callback_query.message,
         MessageTemplates.format_success_message(
             "Job Completed",
             f"Job {job_id} has been completed."
         )
     )
-    await emp_view_jobs(update, context)
+    emp_view_jobs(update, context)
 
 #######################################
 # NOTE EDITING FUNCTIONALITY
 #######################################
 
-async def director_edit_note(update: Update, context: CallbackContext):
+def director_edit_note(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     context.user_data["awaiting_note_for"] = job_id
     keyboard = [
         [InlineKeyboardButton(f"{ButtonLayouts.CANCEL_PREFIX} Cancel", callback_data=f"cancel_note_{job_id}")]
     ]
     markup = InlineKeyboardMarkup(keyboard)
-    await safe_edit_text(
+    safe_edit_text(
         update.callback_query.message,
         MessageTemplates.format_input_prompt("Please send the note for Job {job_id}:")
     )
 
-async def director_cancel_note(update: Update, context: CallbackContext):
-    await director_send_job(update, context)
+def director_cancel_note(update: Update, context: CallbackContext):
+    director_send_job(update, context)
 
 #######################################
 # TEXT HANDLER
 #######################################
 
-async def handle_text(update: Update, context: CallbackContext):
+def handle_text(update: Update, context: CallbackContext):
     if "awaiting_note_for" in context.user_data:
         job_id = context.user_data.pop("awaiting_note_for")
         note = update.message.text
         cursor.execute("UPDATE grounds_data SET notes = ? WHERE id = ?", (note, job_id))
         conn.commit()
-        await update.message.reply_text(
+        update.message.reply_text(
             MessageTemplates.format_success_message(
                 "Note Updated",
                 f"Note updated for Job {job_id}."
@@ -672,21 +672,21 @@ async def handle_text(update: Update, context: CallbackContext):
             if job:
                 cursor.execute("UPDATE grounds_data SET notes = ? WHERE id = ?", (notes, job[0]))
         conn.commit()
-        await update.message.reply_text(
+        update.message.reply_text(
             MessageTemplates.format_success_message(
                 "Notes Added",
                 f"Notes added to {len(selected_jobs)} job(s)."
             )
         )
-        await director_assign_jobs(update, context)
+        director_assign_jobs(update, context)
 
 #######################################
 # CALLBACK QUERY HANDLER
 #######################################
 
-async def callback_handler(update: Update, context: CallbackContext):
+def callback_handler(update: Update, context: CallbackContext):
     data = update.callback_query.data
-    await update.callback_query.answer()
+    update.callback_query.answer()
     
     handlers = {
         "start": start,
@@ -704,50 +704,50 @@ async def callback_handler(update: Update, context: CallbackContext):
     
     # Handle direct matches
     if data in handlers:
-        await handlers[data](update, context)
+        handlers[data](update, context)
         return
     
     # Handle prefixed matches
     if data.startswith("select_day_"):
-        await director_select_day_for_assignment(update, context)
+        director_select_day_for_assignment(update, context)
     elif data == "select_day_for_assignment":
-        await director_select_day_for_assignment(update, context)
+        director_select_day_for_assignment(update, context)
     elif data.startswith("assign_day_"):
-        await director_assign_day_selected(update, context)
+        director_assign_day_selected(update, context)
     elif data.startswith("dir_assign_jobs_"):
-        await director_assign_jobs(update, context)
+        director_assign_jobs(update, context)
     elif data == "assign_selected_jobs":
-        await director_select_day_for_assignment(update, context)
+        director_select_day_for_assignment(update, context)
     elif data.startswith("toggle_job_"):
-        await handle_toggle_job(update, context)
+        handle_toggle_job(update, context)
     elif data.startswith("assign_to_"):
-        await assign_jobs_to_employee(update, context)
+        assign_jobs_to_employee(update, context)
     elif data.startswith("job_menu_"):
-        await emp_job_menu(update, context)
+        emp_job_menu(update, context)
     elif data.startswith("upload_photo_"):
-        await emp_upload_photo(update, context)
+        emp_upload_photo(update, context)
     elif data.startswith("site_info_"):
-        await emp_site_info(update, context)
+        emp_site_info(update, context)
     elif data.startswith("start_job_"):
-        await emp_start_job(update, context)
+        emp_start_job(update, context)
     elif data.startswith("finish_job_"):
-        await emp_finish_job(update, context)
+        emp_finish_job(update, context)
     elif data.startswith("map_link_"):
-        await emp_map_link(update, context)
+        emp_map_link(update, context)
     elif data.startswith("send_job_"):
-        await director_send_job(update, context)
+        director_send_job(update, context)
     elif data.startswith("edit_note_"):
-        await director_edit_note(update, context)
+        director_edit_note(update, context)
     elif data.startswith("cancel_note_"):
-        await director_cancel_note(update, context)
+        director_cancel_note(update, context)
     elif data.startswith("page_"):
         page = int(data.split("_")[-1])
         text, markup = build_director_assign_jobs_page(page, context)
-        await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+        safe_edit_text(update.callback_query.message, text, reply_markup=markup)
     elif data == "noop":
         pass
 
-async def handle_toggle_job(update: Update, context: CallbackContext):
+def handle_toggle_job(update: Update, context: CallbackContext):
     site_name = update.callback_query.data.split("_", 2)[-1]
     if "selected_jobs" not in context.user_data:
         context.user_data["selected_jobs"] = set()
@@ -761,13 +761,13 @@ async def handle_toggle_job(update: Update, context: CallbackContext):
     logger.info(f"Toggled {site_name} - selected_jobs now: {selected_jobs}")
     page = context.user_data.get("current_page", 0)
     text, markup = build_director_assign_jobs_page(page, context)
-    await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+    safe_edit_text(update.callback_query.message, text, reply_markup=markup)
 
 #######################################
 # DEV DASHBOARD FUNCTIONS
 #######################################
 
-async def dev_dashboard(update: Update, context: CallbackContext):
+def dev_dashboard(update: Update, context: CallbackContext):
     text = MessageTemplates.format_dashboard_header("Developer", "Dev")
     keyboard = [
         [InlineKeyboardButton("Director Dashboard", callback_data="dev_director_dashboard")],
@@ -777,11 +777,11 @@ async def dev_dashboard(update: Update, context: CallbackContext):
     markup = InlineKeyboardMarkup(keyboard)
     
     if update.callback_query:
-        await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+        safe_edit_text(update.callback_query.message, text, reply_markup=markup)
     else:
-        await update.message.reply_text(text, reply_markup=markup)
+        update.message.reply_text(text, reply_markup=markup)
 
-async def dev_director_dashboard(update: Update, context: CallbackContext):
+def dev_director_dashboard(update: Update, context: CallbackContext):
     text = MessageTemplates.format_dashboard_header("Developer Director", "Dev")
     keyboard = [
         [InlineKeyboardButton("Director Dashboard", callback_data="director_dashboard")],
@@ -790,11 +790,11 @@ async def dev_director_dashboard(update: Update, context: CallbackContext):
     markup = InlineKeyboardMarkup(keyboard)
     
     if update.callback_query:
-        await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+        safe_edit_text(update.callback_query.message, text, reply_markup=markup)
     else:
-        await update.message.reply_text(text, reply_markup=markup)
+        update.message.reply_text(text, reply_markup=markup)
 
-async def dev_employee_dashboard(update: Update, context: CallbackContext):
+def dev_employee_dashboard(update: Update, context: CallbackContext):
     text = MessageTemplates.format_dashboard_header("Developer Employee", "Dev")
     keyboard = [
         [InlineKeyboardButton("Employee Dashboard", callback_data="emp_employee_dashboard")],
@@ -803,15 +803,15 @@ async def dev_employee_dashboard(update: Update, context: CallbackContext):
     markup = InlineKeyboardMarkup(keyboard)
     
     if update.callback_query:
-        await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+        safe_edit_text(update.callback_query.message, text, reply_markup=markup)
     else:
-        await update.message.reply_text(text, reply_markup=markup)
+        update.message.reply_text(text, reply_markup=markup)
 
 #######################################
 # DIRECTOR CALENDAR VIEW
 #######################################
 
-async def director_calendar_view(update: Update, context: CallbackContext):
+def director_calendar_view(update: Update, context: CallbackContext):
     text = MessageTemplates.format_success_message(
         "Calendar View",
         "Calendar View: [Feature coming soon - This is a stub]"
@@ -820,23 +820,22 @@ async def director_calendar_view(update: Update, context: CallbackContext):
         [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]
     ]
     markup = InlineKeyboardMarkup(keyboard)
-    await safe_edit_text(update.callback_query.message, text, reply_markup=markup)
+    safe_edit_text(update.callback_query.message, text, reply_markup=markup)
 
 #######################################
 # START COMMAND
 #######################################
 
-async def start(update: Update, context: CallbackContext):
+def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     role = get_user_role(user_id)
     
     if role == "Dev":
-        await dev_dashboard(update, context)
-
+        dev_dashboard(update, context)
     elif role == "Director":
-        await director_dashboard(update, context)
+        director_dashboard(update, context)
     elif role == "Employee":
-        await emp_employee_dashboard(update, context)
+        emp_employee_dashboard(update, context)
     else:
         text = MessageTemplates.format_error_message(
             "Access Denied",
@@ -844,15 +843,15 @@ async def start(update: Update, context: CallbackContext):
             code="ROLE_404"
         )
         if update.callback_query:
-            await update.callback_query.message.reply_text(text)
+            update.callback_query.message.reply_text(text)
         else:
-            await update.message.reply_text(text)
+            update.message.reply_text(text)
 
 #######################################
 # HELP COMMAND
 #######################################
 
-async def help_command(update: Update, context: CallbackContext):
+def help_command(update: Update, context: CallbackContext):
     text = (
         "🤖 *Bot Help*\n\n"
         "*/start* - Launch the bot and navigate to your dashboard.\n"
@@ -864,9 +863,9 @@ async def help_command(update: Update, context: CallbackContext):
         "If you have any questions, ask your system admin."
     )
     if update.callback_query:
-        await update.callback_query.message.reply_text(text, parse_mode="Markdown")
+        update.callback_query.message.reply_text(text, parse_mode="Markdown")
     else:
-        await update.message.reply_text(text, parse_mode="Markdown")
+        update.message.reply_text(text, parse_mode="Markdown")
 
 #######################################
 # MAIN FUNCTION & SCHEDULER SETUP
@@ -896,11 +895,7 @@ def main():
     updater.idle()
 
 if __name__ == "__main__":
-    # Set up asyncio event loop
-    loop = asyncio.get_event_loop()
     try:
         main()
     except KeyboardInterrupt:
         pass
-    finally:
-        loop.close()
