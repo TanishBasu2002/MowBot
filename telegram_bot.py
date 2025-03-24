@@ -21,6 +21,7 @@ import asyncio
 from PIL import Image
 import io
 import pytz
+import sys
 
 # Custom imghdr implementation
 def what(filename, h=None):
@@ -38,7 +39,7 @@ def what(filename, h=None):
         return 'gif'
     return None
 
-import sys
+# Set up custom imghdr module
 sys.modules['imghdr'] = type('imghdr', (), {'what': what})()
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -895,4 +896,11 @@ def main():
     updater.idle()
 
 if __name__ == "__main__":
-    main()
+    # Set up asyncio event loop
+    loop = asyncio.get_event_loop()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        loop.close()
