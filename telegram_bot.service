@@ -1,0 +1,15 @@
+[Unit]
+Description=MowBot Telegram Bot Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/MowBot
+Environment=PYTHONPATH=/root/MowBot
+ExecStart=/root/MowBot/venv/bin/python telegram_bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target 

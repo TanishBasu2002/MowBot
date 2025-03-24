@@ -18,6 +18,28 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 import asyncio
+from PIL import Image
+import io
+import pytz
+
+# Custom imghdr implementation
+def what(filename, h=None):
+    """Determine the type of image contained in a file or byte stream."""
+    if h is None:
+        with open(filename, 'rb') as f:
+            h = f.read(32)
+    if not h:
+        return None
+    if h.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'png'
+    if h.startswith(b'\xff\xd8'):
+        return 'jpeg'
+    if h.startswith(b'GIF87a') or h.startswith(b'GIF89a'):
+        return 'gif'
+    return None
+
+import sys
+sys.modules['imghdr'] = type('imghdr', (), {'what': what})()
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
@@ -28,12 +50,12 @@ from telegram import (
     InputMediaPhoto
 )
 from telegram.ext import (
-    Application,
+    Updater,
     CommandHandler,
     CallbackQueryHandler,
-    ContextTypes,
+    CallbackContext,
     MessageHandler,
-    filters
+    Filters
 )
 from telegram.error import BadRequest
 
@@ -41,7 +63,7 @@ from src.bot.utils.message_templates import MessageTemplates
 from src.bot.utils.button_layouts import ButtonLayouts
 from src.bot.database.models import get_db, Ground
 from src.bot.services.ground_service import GroundService
-from src.bot.utils.decorators import error_handler, director_only, employee_only
+from src.bot.utils.decorators import error_handler, director_only, employee_required
 
 #####################
 # ENV & TOKEN SETUP
@@ -149,7 +171,7 @@ async def reset_completed_jobs():
 # PHOTO UPLOAD ENHANCEMENT
 #######################################
 
-async def director_send_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def director_send_job(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute("SELECT site_name, photos, start_time, finish_time, notes FROM grounds_data WHERE id = ?", (job_id,))
     row = cursor.fetchone()
@@ -210,7 +232,7 @@ async def director_send_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await safe_edit_text(update.callback_query.message, detail_text, reply_markup=markup)
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_photo(update: Update, context: CallbackContext):
     if "awaiting_photo_for" not in context.user_data:
         return
     
@@ -220,7 +242,25 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.makedirs(photo_dir, exist_ok=True)
     photo_filename = f"job_{job_id}_{photo_file.file_id}.jpg"
     photo_path = os.path.join(photo_dir, photo_filename)
-    await photo_file.download_to_drive(custom_path=photo_path)
+    
+    try:
+        # Download the photo to memory first
+        photo_bytes = await photo_file.download_as_bytearray()
+        
+        # Verify and save the image using PIL
+        with Image.open(io.BytesIO(photo_bytes)) as img:
+            img.verify()
+            img.save(photo_path, format='JPEG')
+    except Exception as e:
+        logger.error(f"Error processing photo: {str(e)}")
+        await update.message.reply_text(
+            MessageTemplates.format_error_message(
+                "Photo Error",
+                "Failed to process the photo. Please try again.",
+                code="PHOTO_ERROR"
+            )
+        )
+        return
     
     cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
     result = cursor.fetchone()
@@ -245,7 +285,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # JOB ASSIGNMENT & DAY SELECTION
 #######################################
 
-async def director_select_day_for_assignment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def director_select_day_for_assignment(update: Update, context: CallbackContext):
     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     keyboard = []
     for day in days:
@@ -258,7 +298,7 @@ async def director_select_day_for_assignment(update: Update, context: ContextTyp
     header = f"{greeting}! Please select a day of the week for assignment:"
     await safe_edit_text(update.callback_query.message, header, reply_markup=markup)
 
-async def director_assign_day_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def director_assign_day_selected(update: Update, context: CallbackContext):
     selected_day = update.callback_query.data.split("_")[-1]
     context.user_data["selected_day"] = selected_day
     
@@ -278,7 +318,7 @@ async def director_assign_day_selected(update: Update, context: ContextTypes.DEF
 # DIRECTOR DASHBOARD
 #######################################
 
-async def director_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def director_dashboard(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     name = employee_users.get(user_id, "Director")
     
@@ -311,7 +351,7 @@ async def director_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # DIRECTOR: View Employee Jobs
 #######################################
 
-async def director_view_employee_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE, employee_id: int, employee_name: str):
+async def director_view_employee_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
     cursor.execute(
         """
         SELECT id, site_name, scheduled_date, start_time, finish_time, status, area, notes 
@@ -413,17 +453,17 @@ def create_job_buttons(jobs: list) -> list:
         ])
     return buttons
 
-async def director_view_andys_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def director_view_andys_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 1672989849, "Andy")
 
-async def director_view_alexs_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def director_view_alexs_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 6396234665, "Alex")
 
 #######################################
 # EMPLOYEE DASHBOARD & FEATURES
 #######################################
 
-async def emp_employee_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def emp_employee_dashboard(update: Update, context: CallbackContext):
     if "awaiting_photo_for" in context.user_data:
         del context.user_data["awaiting_photo_for"]
     
@@ -444,7 +484,7 @@ async def emp_employee_dashboard(update: Update, context: ContextTypes.DEFAULT_T
     elif update.message:
         await update.message.reply_text(text, reply_markup=markup)
 
-async def emp_view_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def emp_view_jobs(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     cursor.execute(
         """
@@ -495,7 +535,7 @@ async def emp_view_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.message:
         await update.message.reply_text(message, reply_markup=markup)
 
-async def emp_job_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def emp_job_menu(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
         """
@@ -551,7 +591,7 @@ async def emp_job_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=markup
     )
 
-async def emp_start_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def emp_start_job(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
         "UPDATE grounds_data SET status = 'in_progress', start_time = ? WHERE id = ?",
@@ -568,7 +608,7 @@ async def emp_start_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await emp_view_jobs(update, context)
 
-async def emp_finish_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def emp_finish_job(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
         "UPDATE grounds_data SET status = 'completed', finish_time = ? WHERE id = ?",
@@ -589,7 +629,7 @@ async def emp_finish_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # NOTE EDITING FUNCTIONALITY
 #######################################
 
-async def director_edit_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def director_edit_note(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     context.user_data["awaiting_note_for"] = job_id
     keyboard = [
@@ -601,14 +641,14 @@ async def director_edit_note(update: Update, context: ContextTypes.DEFAULT_TYPE)
         MessageTemplates.format_input_prompt("Please send the note for Job {job_id}:")
     )
 
-async def director_cancel_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def director_cancel_note(update: Update, context: CallbackContext):
     await director_send_job(update, context)
 
 #######################################
 # TEXT HANDLER
 #######################################
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_text(update: Update, context: CallbackContext):
     if "awaiting_note_for" in context.user_data:
         job_id = context.user_data.pop("awaiting_note_for")
         note = update.message.text
@@ -643,7 +683,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CALLBACK QUERY HANDLER
 #######################################
 
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def callback_handler(update: Update, context: CallbackContext):
     data = update.callback_query.data
     await update.callback_query.answer()
     
@@ -706,7 +746,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "noop":
         pass
 
-async def handle_toggle_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_toggle_job(update: Update, context: CallbackContext):
     site_name = update.callback_query.data.split("_", 2)[-1]
     if "selected_jobs" not in context.user_data:
         context.user_data["selected_jobs"] = set()
@@ -726,7 +766,7 @@ async def handle_toggle_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # DEV DASHBOARD FUNCTIONS
 #######################################
 
-async def dev_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def dev_dashboard(update: Update, context: CallbackContext):
     text = MessageTemplates.format_dashboard_header("Developer", "Dev")
     keyboard = [
         [InlineKeyboardButton("Director Dashboard", callback_data="dev_director_dashboard")],
@@ -740,7 +780,7 @@ async def dev_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text, reply_markup=markup)
 
-async def dev_director_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def dev_director_dashboard(update: Update, context: CallbackContext):
     text = MessageTemplates.format_dashboard_header("Developer Director", "Dev")
     keyboard = [
         [InlineKeyboardButton("Director Dashboard", callback_data="director_dashboard")],
@@ -753,7 +793,7 @@ async def dev_director_dashboard(update: Update, context: ContextTypes.DEFAULT_T
     else:
         await update.message.reply_text(text, reply_markup=markup)
 
-async def dev_employee_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def dev_employee_dashboard(update: Update, context: CallbackContext):
     text = MessageTemplates.format_dashboard_header("Developer Employee", "Dev")
     keyboard = [
         [InlineKeyboardButton("Employee Dashboard", callback_data="emp_employee_dashboard")],
@@ -770,7 +810,7 @@ async def dev_employee_dashboard(update: Update, context: ContextTypes.DEFAULT_T
 # DIRECTOR CALENDAR VIEW
 #######################################
 
-async def director_calendar_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def director_calendar_view(update: Update, context: CallbackContext):
     text = MessageTemplates.format_success_message(
         "Calendar View",
         "Calendar View: [Feature coming soon - This is a stub]"
@@ -785,12 +825,13 @@ async def director_calendar_view(update: Update, context: ContextTypes.DEFAULT_T
 # START COMMAND
 #######################################
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     role = get_user_role(user_id)
     
     if role == "Dev":
         await dev_dashboard(update, context)
+
     elif role == "Director":
         await director_dashboard(update, context)
     elif role == "Employee":
@@ -810,7 +851,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # HELP COMMAND
 #######################################
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(update: Update, context: CallbackContext):
     text = (
         "🤖 *Bot Help*\n\n"
         "*/start* - Launch the bot and navigate to your dashboard.\n"
@@ -831,24 +872,27 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #######################################
 
 def main():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Create the Updater and pass it your bot's token
+    updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
+    
+    # Get the dispatcher to register handlers
+    dispatcher = updater.dispatcher
     
     # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(CallbackQueryHandler(callback_handler))
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(CommandHandler("help", help_command))
+    dispatcher.add_handler(MessageHandler(Filters.photo & ~Filters.command, handle_photo))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
+    dispatcher.add_handler(CallbackQueryHandler(callback_handler))
     
-    # Setup scheduler
-    scheduler = AsyncIOScheduler(event_loop=loop)
+    # Setup scheduler with timezone
+    scheduler = AsyncIOScheduler(timezone=pytz.timezone('UTC'))
     scheduler.add_job(reset_completed_jobs, 'cron', hour=0, minute=0)
     scheduler.start()
     
-    # Run the bot
-    application.run_polling()
+    # Start the bot
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
