@@ -13,7 +13,7 @@
 # - Employee Dashboard:
 #    • View daily jobs with inline buttons for start/finish, site info, map link, and upload photos
 #    • All actions update the same message (smooth inline editing)
-# - Dev Dashboard for debugging access.
+# - Dev Dashboard for debugging access (using a custom inline keyboard)
 #
 # All inline actions use update.effective_message for smooth UX.
 ######################################################
@@ -383,6 +383,7 @@ def director_view_alexs_jobs(update: Update, context: CallbackContext):
 #######################################
 
 def dev_dashboard(update: Update, context: CallbackContext):
+    # Since ButtonLayouts lacks create_dev_dashboard, we define a simple inline keyboard for the dev dashboard.
     user_id = update.effective_user.id
     name = employee_users.get(user_id, "Developer")
     header = MessageTemplates.format_dashboard_header(name, "Developer")
@@ -397,7 +398,11 @@ def dev_dashboard(update: Update, context: CallbackContext):
         MessageTemplates.SEPARATOR
     ]
     message_text = f"{header}\n\n" + "\n".join(stats)
-    markup = ButtonLayouts.create_dev_dashboard(show_stats=True)
+    # Create a simple dev dashboard inline keyboard:
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Director Dashboard", callback_data="dev_director_dashboard")],
+        [InlineKeyboardButton("Employee Dashboard", callback_data="dev_employee_dashboard")]
+    ])
     safe_edit_text(update, message_text, reply_markup=markup)
 
 def dev_director_dashboard(update: Update, context: CallbackContext):
@@ -511,8 +516,13 @@ def director_dashboard(update: Update, context: CallbackContext):
         MessageTemplates.SEPARATOR
     ]
     message_text = f"{header}\n\n" + "\n".join(stats)
-    markup = ButtonLayouts.create_director_dashboard(show_stats=True)
-    safe_edit_text(update, message_text, reply_markup=markup)
+    # Using a fallback inline keyboard for the director dashboard from ButtonLayouts
+    # (If ButtonLayouts.create_director_dashboard exists, it will be used elsewhere.)
+    director_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("View Unassigned Jobs", callback_data="dir_assign_jobs")],
+        [InlineKeyboardButton("View Completed Jobs", callback_data="calendar_view")]
+    ])
+    safe_edit_text(update, message_text, reply_markup=director_kb)
 
 def director_add_notes(update: Update, context: CallbackContext):
     if "selected_jobs" not in context.user_data or not context.user_data["selected_jobs"]:
@@ -872,13 +882,12 @@ def accumulate_profit():
         time.sleep(3600)  # every hour
         for uid, data in user_data.items():
             data['points'] += data['profit_per_hour']
-            # Optionally, send a notification here
+            # Optionally, send a notification
 
 def start_profit_thread():
     profit_thread = threading.Thread(target=accumulate_profit, daemon=True)
     profit_thread.start()
 
-# Updated main function using ApplicationBuilder (PTB v20+)
 from telegram.ext import ApplicationBuilder
 
 def main() -> None:
@@ -896,3 +905,4 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         pass
+    
