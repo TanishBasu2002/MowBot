@@ -10,8 +10,8 @@
 #       for selection (tick/untick) and then assignment to Andy or Alex.
 #     • "View Completed Jobs" – (stub view).
 # - Employee Dashboard: Shows assigned jobs with inline buttons for
-#   start/finish, site info, map link, and uploading photos.
-#   The "Upload Photo" button prompts the employee to send a photo.
+#   starting/finishing jobs, viewing site info, map link, and uploading photos.
+#   The "Upload Photo" button prompts the employee to manually attach a photo.
 # - All inline actions update the same message (smooth inline editing).
 #
 # Note: Ensure your Telegram dev user ID is only in dev_users.
@@ -44,7 +44,7 @@ from telegram.ext import (
 )
 from telegram.error import BadRequest
 
-# Custom modules – ensure these work as expected.
+# Custom modules – ensure these exist and work as expected.
 from src.bot.utils.message_templates import MessageTemplates
 from src.bot.utils.button_layouts import ButtonLayouts
 from src.bot.database.models import get_db, Ground
@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 # Global dictionary for simulation user data
 user_data = {}
 
-# Async helper for safe inline editing
+# Helper function: safe inline message editing.
 async def safe_edit_text(update: Update, text: str, reply_markup: InlineKeyboardMarkup = None):
     try:
         await update.effective_message.edit_text(text, reply_markup=reply_markup)
@@ -81,7 +81,7 @@ async def safe_edit_text(update: Update, text: str, reply_markup: InlineKeyboard
 #####################
 
 # Replace these with your actual Telegram IDs.
-dev_users = {1672989849}  # Your dev ID
+dev_users = {1672989849}         # Your dev ID
 director_users = {987654321, 111222333}  # Two director IDs
 employee_users = {444555666: "Andy", 777888999: "Alex"}  # Two employee IDs
 
@@ -93,6 +93,37 @@ def get_user_role(user_id: int) -> str:
     elif user_id in employee_users:
         return "Employee"
     return "Generic"
+
+#####################
+# SITE INFO UPDATES
+#####################
+
+def update_site_info(site_name, contact, gate_code):
+    SITE_INFO_UPDATES = {
+         "Avonmouth wind farm": {"contact": "Operational control - 03452008173"},
+         "Orchard medical centre": {"contact": "Ollie - 07542826816", "gate_code": "2489Z"},
+         "Vauxhall Weston super mare": {"contact": "Simon - 07403320588"},
+         "Hannah more primary school": {"contact": "Bob - 07766065032"},
+         "Bristol card solutions": {"contact": "Dan - 07545053817"},
+         "Greenfield Gospel": {"gate_code": "1510"},
+         "Magpie cottage": {"gate_code": "1275"},
+         "Vauxhall Bristol": {"contact": "Mike - 07865936855"},
+         "Ipeco composites": {"contact": "Graeme - 07880006105"},
+         "Patchway Camera studios": {"gate_code": "08710"},
+         "Rowling gate 1": {"gate_code": "C1720"},
+         "Wessex water": {"gate_code": "5969"},
+         "Mercedes Bristol": {"gate_code": "0832"},
+         "Cabot Barton man": {"gate_code": "7489"},
+         "Trinity lodge": {"gate_code": "3841"},
+         "BioTechne": {"contact": "James - 07970743364"}
+    }
+    if site_name in SITE_INFO_UPDATES:
+        info = SITE_INFO_UPDATES[site_name]
+        if "contact" in info:
+            contact = info["contact"]
+        if "gate_code" in info:
+            gate_code = info["gate_code"]
+    return contact, gate_code
 
 #####################
 # DATABASE SETUP
@@ -156,12 +187,20 @@ async def handle_photo(update: Update, context: CallbackContext):
     photo_path = os.path.join(photo_dir, photo_filename)
     try:
         photo_bytes = await photo_file.download_as_bytearray()
-        with Image.open(io.BytesIO(photo_bytes)) as img:
-            img.verify()
+        stream = io.BytesIO(photo_bytes)
+        try:
+            with Image.open(stream) as img:
+                img.verify()
+        except Exception as e:
+            logger.error(f"Photo verification error: {e}")
+            await update.message.reply_text("Photo verification failed.")
+            return
+        stream.seek(0)
+        with Image.open(stream) as img:
             img.save(photo_path, format='JPEG')
     except Exception as e:
         logger.error(f"Photo processing error: {e}")
-        await update.message.reply_text(MessageTemplates.format_error_message("Photo Error", "Failed to process the photo."))
+        await update.message.reply_text("Photo processing failed.")
         return
     try:
         cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
@@ -279,13 +318,15 @@ async def create_job_buttons(jobs: list) -> list:
 
 async def build_director_assign_jobs_page(page: int, context: CallbackContext) -> tuple:
     jobs_per_page = 5
+    offset = (page - 1) * jobs_per_page
     cursor.execute(
         """
         SELECT id, site_name, area, status 
         FROM grounds_data 
         WHERE assigned_to IS NULL 
         ORDER BY id
-        """, (jobs_per_page, page * jobs_per_page)
+        LIMIT ? OFFSET ?
+        """, (jobs_per_page, offset)
     )
     jobs = cursor.fetchall()
     if not jobs:
@@ -302,9 +343,9 @@ async def build_director_assign_jobs_page(page: int, context: CallbackContext) -
     keyboard = []
     for job_id, site_name, area, status in jobs:
         is_selected = site_name in selected_jobs
-        keyboard.append([InlineKeyboardButton(f"{'✅' if is_selected else '⬜️'} {site_name}", callback_data=f"toggle_job_{site_name}")])
+        keyboard.append([InlineKeyboardButton(f"{'✅' if is_selected else '⬜️'} {site_name}", callback_data=f"toggle_job_{job_id}")])
     nav_buttons = []
-    if page > 0:
+    if page > 1:
         nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"page_{page-1}"))
     nav_buttons.append(InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard"))
     if len(jobs) == jobs_per_page:
@@ -372,7 +413,7 @@ async def director_view_andys_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 1672989849, "Andy")
 
 async def director_view_alexs_jobs(update: Update, context: CallbackContext):
-    await director_view_employee_jobs(update, context, 6396234665, "Alex")
+    await director_view_employee_jobs(update, context, 639888999, "Alex")
 
 #######################################
 # DEV FUNCTIONS
@@ -410,6 +451,8 @@ async def director_send_job(update: Update, context: CallbackContext):
         await safe_edit_text(update, MessageTemplates.format_error_message("Job not found", "The requested job was not found."))
         return
     site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area = row
+    # Update site info with provided mappings
+    contact, gate_code = update_site_info(site_name, contact, gate_code)
     duration_str = "N/A"
     if start_time and finish_time:
         try:
@@ -461,7 +504,7 @@ async def director_send_job(update: Update, context: CallbackContext):
     else:
         await safe_edit_text(update, "\n\n".join(sections), reply_markup=markup)
 
-# NEW: When "Assign Jobs" is clicked, list all unassigned jobs.
+# NEW: List all unassigned jobs for assignment.
 async def director_assign_jobs_list(update: Update, context: CallbackContext):
     context.user_data["selected_jobs"] = set()
     context.user_data["current_page"] = 1
@@ -469,11 +512,9 @@ async def director_assign_jobs_list(update: Update, context: CallbackContext):
     await safe_edit_text(update, text, reply_markup=markup)
 
 async def director_select_day_for_assignment(update: Update, context: CallbackContext):
-    # For now, we ignore day/calendar functionality.
     await safe_edit_text(update, "Day selection is disabled for now.")
 
 async def director_assign_day_selected(update: Update, context: CallbackContext):
-    # For now, ignore day selection.
     await safe_edit_text(update, "Day selection is disabled for now.")
 
 async def director_dashboard(update: Update, context: CallbackContext):
@@ -528,7 +569,6 @@ async def director_assign_jobs(update: Update, context: CallbackContext):
     if "selected_jobs" not in context.user_data or not context.user_data["selected_jobs"]:
         await safe_edit_text(update, MessageTemplates.format_error_message("No Jobs Selected", "Please select jobs before assigning."))
         return
-    # For now, we ignore day selection.
     keyboard = []
     for emp_id, emp_name in employee_users.items():
         keyboard.append([InlineKeyboardButton(f"Assign to {emp_name}", callback_data=f"assign_to_{emp_id}")])
@@ -557,7 +597,8 @@ async def assign_jobs_to_employee(update: Update, context: CallbackContext):
         await safe_edit_text(update, MessageTemplates.format_error_message("Database Error", "Failed to assign jobs. Please try again."))
 
 async def director_calendar_view(update: Update, context: CallbackContext):
-    await safe_edit_text(update, MessageTemplates.format_success_message("Calendar View", "Calendar View: [Feature coming soon]"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]]))
+    await safe_edit_text(update, MessageTemplates.format_success_message("Calendar View", "Calendar View: [Feature coming soon]"),
+                           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]]))
 
 #######################################
 # EMPLOYEE FUNCTIONS
@@ -623,6 +664,7 @@ async def emp_job_menu(update: Update, context: CallbackContext):
                 duration=(str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0] if start_time and finish_time else "N/A"),
                 notes=notes)]
     if contact or gate_code:
+        contact, gate_code = update_site_info(site_name, contact, gate_code)
         sections.append(MessageTemplates.format_site_info(site_name=site_name, contact=contact, gate_code=gate_code, address=None, special_instructions=None))
     keyboard = []
     if status == 'pending':
@@ -686,7 +728,6 @@ async def emp_upload_photo(update: Update, context: CallbackContext):
     context.user_data["awaiting_photo_for"] = job_id
     keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.DANGER_PREFIX} Cancel", callback_data=f"job_menu_{job_id}")]]
     markup = InlineKeyboardMarkup(keyboard)
-    # Replaced format_input_prompt with plain text.
     await safe_edit_text(update, "Please send the photo for this job.\n(Manually attach and send a photo.)", reply_markup=markup)
 
 async def emp_site_info(update: Update, context: CallbackContext):
@@ -697,6 +738,7 @@ async def emp_site_info(update: Update, context: CallbackContext):
         await safe_edit_text(update, MessageTemplates.format_error_message("Job not found", "The requested job was not found.", "JOB_404"))
         return
     site_name, contact, gate_code, address = job_data
+    contact, gate_code = update_site_info(site_name, contact, gate_code)
     info_text = MessageTemplates.format_site_info(site_name=site_name, contact=contact, gate_code=gate_code, address=address, special_instructions=None)
     keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data=f"job_menu_{job_id}")]]
     markup = InlineKeyboardMarkup(keyboard)
@@ -735,8 +777,8 @@ async def callback_handler(update: Update, context: CallbackContext):
         "emp_view_jobs": emp_view_jobs,
         "emp_employee_dashboard": emp_employee_dashboard,
         "add_notes": director_add_notes,
-        "dir_assign_jobs": director_assign_jobs,  # Not used directly now.
-        "assign_selected_jobs": director_assign_day_selected  # This will be triggered after selection.
+        "dir_assign_jobs": director_assign_jobs,  # not directly used
+        "assign_selected_jobs": director_assign_jobs  # now assign_selected_jobs calls director_assign_jobs
     }
     if data in handlers:
         await handlers[data](update, context)
@@ -795,16 +837,6 @@ async def reset_completed_jobs():
     conn.commit()
 
 #######################################
-# NEW: Director Assign Jobs List
-#######################################
-
-async def director_assign_jobs_list(update: Update, context: CallbackContext):
-    context.user_data["selected_jobs"] = set()
-    context.user_data["current_page"] = 1
-    text, markup = await build_director_assign_jobs_page(1, context)
-    await safe_edit_text(update, text, reply_markup=markup)
-
-#######################################
 # START & HELP COMMANDS
 #######################################
 
@@ -844,7 +876,7 @@ async def help_command(update: Update, context: CallbackContext):
 def start_profit_thread():
     def accumulate_profit():
         while True:
-            time.sleep(3600)  # every hour
+            time.sleep(3600)
             for uid, data in user_data.items():
                 data['points'] += data['profit_per_hour']
     profit_thread = threading.Thread(target=accumulate_profit, daemon=True)
