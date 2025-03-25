@@ -10,7 +10,7 @@
 #       for selection (tick/untick) and then assignment to Andy or Alex.
 #     • "View Completed Jobs" – (stub view).
 # - Employee Dashboard: Shows assigned jobs with inline buttons for
-#   starting/finishing jobs, site info, map link, and uploading photos.
+#   start/finish, site info, map link, and uploading photos.
 #   The "Upload Photo" button prompts the employee to send a photo.
 # - All inline actions update the same message (smooth inline editing).
 #
@@ -44,7 +44,7 @@ from telegram.ext import (
 )
 from telegram.error import BadRequest
 
-# Custom modules – ensure these exist and work as expected.
+# Custom modules – ensure these work as expected.
 from src.bot.utils.message_templates import MessageTemplates
 from src.bot.utils.button_layouts import ButtonLayouts
 from src.bot.database.models import get_db, Ground
@@ -80,11 +80,10 @@ async def safe_edit_text(update: Update, text: str, reply_markup: InlineKeyboard
 # ROLES & USERS
 #####################
 
-# Set your IDs appropriately.
-dev_users = {1672989849}         # Replace with your dev Telegram user ID.
-director_users = {987654321, 111222333}  # Two director IDs.
-employee_users = {444555666: "Andy", 777888999: "Alex"}  # Two employee IDs.
-# Ensure your dev ID is only in dev_users.
+# Replace these with your actual Telegram IDs.
+dev_users = {1672989849}  # Your dev ID
+director_users = {987654321, 111222333}  # Two director IDs
+employee_users = {444555666: "Andy", 777888999: "Alex"}  # Two employee IDs
 
 def get_user_role(user_id: int) -> str:
     if user_id in dev_users:
@@ -128,13 +127,11 @@ cursor.executescript(
     );
     """
 )
-
 cursor.executescript(""" 
     CREATE INDEX IF NOT EXISTS idx_grounds_assigned_to ON grounds_data(assigned_to);
     CREATE INDEX IF NOT EXISTS idx_grounds_status ON grounds_data(status);
     CREATE INDEX IF NOT EXISTS idx_grounds_site_name ON grounds_data(site_name);
 """)
-
 try:
     cursor.execute("ALTER TABLE grounds_data ADD COLUMN scheduled_date TEXT;")
     cursor.execute("ALTER TABLE grounds_data ADD COLUMN priority TEXT DEFAULT 'normal';")
@@ -314,8 +311,7 @@ async def build_director_assign_jobs_page(page: int, context: CallbackContext) -
         nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}"))
     keyboard.append(nav_buttons)
     if selected_jobs:
-        keyboard.append([InlineKeyboardButton("📝 Add Notes", callback_data="add_notes"),
-                         InlineKeyboardButton("✅ Assign Selected", callback_data="assign_selected_jobs")])
+        keyboard.append([InlineKeyboardButton("✅ Assign Selected", callback_data="assign_selected_jobs")])
     return "\n\n".join(text_parts), InlineKeyboardMarkup(keyboard)
 
 async def view_job_photos(update: Update, context: CallbackContext):
@@ -383,7 +379,6 @@ async def director_view_alexs_jobs(update: Update, context: CallbackContext):
 #######################################
 
 async def dev_dashboard(update: Update, context: CallbackContext):
-    # Dev dashboard: show buttons for both Director and Employee dashboards.
     header = MessageTemplates.format_dashboard_header("Dev", "Developer")
     dev_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("Director Dashboard", callback_data="dev_director_dashboard")],
@@ -466,6 +461,13 @@ async def director_send_job(update: Update, context: CallbackContext):
     else:
         await safe_edit_text(update, "\n\n".join(sections), reply_markup=markup)
 
+# NEW: When "Assign Jobs" is clicked, list all unassigned jobs.
+async def director_assign_jobs_list(update: Update, context: CallbackContext):
+    context.user_data["selected_jobs"] = set()
+    context.user_data["current_page"] = 1
+    text, markup = await build_director_assign_jobs_page(1, context)
+    await safe_edit_text(update, text, reply_markup=markup)
+
 async def director_select_day_for_assignment(update: Update, context: CallbackContext):
     # For now, we ignore day/calendar functionality.
     await safe_edit_text(update, "Day selection is disabled for now.")
@@ -475,7 +477,6 @@ async def director_assign_day_selected(update: Update, context: CallbackContext)
     await safe_edit_text(update, "Day selection is disabled for now.")
 
 async def director_dashboard(update: Update, context: CallbackContext):
-    # Director dashboard: show "Assign Jobs" and "View Completed Jobs"
     header = MessageTemplates.format_dashboard_header("Director", "Director")
     total_jobs = len(cursor.execute("SELECT id FROM grounds_data").fetchall())
     active_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'in_progress'").fetchall())
@@ -489,7 +490,7 @@ async def director_dashboard(update: Update, context: CallbackContext):
     ]
     message_text = f"{header}\n\n" + "\n".join(stats)
     director_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Assign Jobs", callback_data="dir_assign_jobs")],
+        [InlineKeyboardButton("Assign Jobs", callback_data="dir_assign_jobs_list")],
         [InlineKeyboardButton("View Completed Jobs", callback_data="calendar_view")]
     ])
     await safe_edit_text(update, message_text, reply_markup=director_kb)
@@ -501,7 +502,7 @@ async def director_add_notes(update: Update, context: CallbackContext):
     context.user_data["awaiting_notes"] = True
     keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.DANGER_PREFIX} Cancel", callback_data="director_dashboard")]]
     markup = InlineKeyboardMarkup(keyboard)
-    await safe_edit_text(update, MessageTemplates.format_input_prompt("Please send the notes for the selected jobs:"), reply_markup=markup)
+    await safe_edit_text(update, "Please send the notes for the selected jobs:", reply_markup=markup)
 
 async def director_edit_note(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
@@ -515,7 +516,7 @@ async def director_edit_note(update: Update, context: CallbackContext):
         context.user_data["awaiting_note_for"] = job_id
         keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.DANGER_PREFIX} Cancel", callback_data=f"cancel_note_{job_id}")]]
         markup = InlineKeyboardMarkup(keyboard)
-        await safe_edit_text(update, MessageTemplates.format_input_prompt(f"Please send the note for {site_name} (Job {job_id}):"), reply_markup=markup)
+        await safe_edit_text(update, f"Please send the note for {site_name} (Job {job_id}):", reply_markup=markup)
     except sqlite3.Error as e:
         logger.error(f"Database error (edit note): {e}")
         await safe_edit_text(update, MessageTemplates.format_error_message("Database Error", "Failed to prepare note editing."))
@@ -527,10 +528,7 @@ async def director_assign_jobs(update: Update, context: CallbackContext):
     if "selected_jobs" not in context.user_data or not context.user_data["selected_jobs"]:
         await safe_edit_text(update, MessageTemplates.format_error_message("No Jobs Selected", "Please select jobs before assigning."))
         return
-    if "selected_day" in context.user_data:
-        del context.user_data["selected_day"]
-    if "awaiting_notes" in context.user_data:
-        del context.user_data["awaiting_notes"]
+    # For now, we ignore day selection.
     keyboard = []
     for emp_id, emp_name in employee_users.items():
         keyboard.append([InlineKeyboardButton(f"Assign to {emp_name}", callback_data=f"assign_to_{emp_id}")])
@@ -559,10 +557,7 @@ async def assign_jobs_to_employee(update: Update, context: CallbackContext):
         await safe_edit_text(update, MessageTemplates.format_error_message("Database Error", "Failed to assign jobs. Please try again."))
 
 async def director_calendar_view(update: Update, context: CallbackContext):
-    text = MessageTemplates.format_success_message("Calendar View", "Calendar View: [Feature coming soon]")
-    keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]]
-    markup = InlineKeyboardMarkup(keyboard)
-    await safe_edit_text(update, text, reply_markup=markup)
+    await safe_edit_text(update, MessageTemplates.format_success_message("Calendar View", "Calendar View: [Feature coming soon]"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]]))
 
 #######################################
 # EMPLOYEE FUNCTIONS
@@ -591,8 +586,7 @@ async def emp_view_jobs(update: Update, context: CallbackContext):
     )
     jobs = cursor.fetchall()
     if not jobs:
-        message = MessageTemplates.format_success_message("No Jobs", "You have no assigned jobs today.")
-        await safe_edit_text(update, message)
+        await safe_edit_text(update, MessageTemplates.format_success_message("No Jobs", "You have no assigned jobs today."))
         return
     keyboard = []
     for job_id, site_name, area, status, notes, start_time, finish_time in jobs:
@@ -692,7 +686,8 @@ async def emp_upload_photo(update: Update, context: CallbackContext):
     context.user_data["awaiting_photo_for"] = job_id
     keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.DANGER_PREFIX} Cancel", callback_data=f"job_menu_{job_id}")]]
     markup = InlineKeyboardMarkup(keyboard)
-    await safe_edit_text(update, MessageTemplates.format_input_prompt("Please send the photo for this job.\n(Manually attach and send a photo.)"), reply_markup=markup)
+    # Replaced format_input_prompt with plain text.
+    await safe_edit_text(update, "Please send the photo for this job.\n(Manually attach and send a photo.)", reply_markup=markup)
 
 async def emp_site_info(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
@@ -740,13 +735,15 @@ async def callback_handler(update: Update, context: CallbackContext):
         "emp_view_jobs": emp_view_jobs,
         "emp_employee_dashboard": emp_employee_dashboard,
         "add_notes": director_add_notes,
-        "dir_assign_jobs": director_assign_jobs,
-        "assign_selected_jobs": director_select_day_for_assignment
+        "dir_assign_jobs": director_assign_jobs,  # Not used directly now.
+        "assign_selected_jobs": director_assign_day_selected  # This will be triggered after selection.
     }
     if data in handlers:
         await handlers[data](update, context)
         return
-    if data.startswith("select_day_"):
+    if data == "dir_assign_jobs_list":
+        await director_assign_jobs_list(update, context)
+    elif data.startswith("select_day_"):
         await director_select_day_for_assignment(update, context)
     elif data.startswith("assign_day_"):
         await director_assign_day_selected(update, context)
@@ -786,7 +783,7 @@ async def callback_handler(update: Update, context: CallbackContext):
     elif data == "noop":
         pass
     else:
-        await safe_edit_text(update, MessageTemplates.format_error_message("Unknown Action", "This action is not supported.", "UNKNOWN_ACTION"))
+        await safe_edit_text(update, MessageTemplates.format_error_message("Unknown Action", "This action is not supported."))
 
 #######################################
 # DAILY RESET FUNCTION
@@ -796,6 +793,16 @@ async def reset_completed_jobs():
     logger.info("Resetting completed jobs for a new day.")
     cursor.execute("UPDATE grounds_data SET status = 'pending', assigned_to = NULL, finish_time = NULL WHERE status = 'completed' AND (scheduled_date IS NULL OR scheduled_date = date('now','localtime'))")
     conn.commit()
+
+#######################################
+# NEW: Director Assign Jobs List
+#######################################
+
+async def director_assign_jobs_list(update: Update, context: CallbackContext):
+    context.user_data["selected_jobs"] = set()
+    context.user_data["current_page"] = 1
+    text, markup = await build_director_assign_jobs_page(1, context)
+    await safe_edit_text(update, text, reply_markup=markup)
 
 #######################################
 # START & HELP COMMANDS
@@ -811,11 +818,7 @@ async def start(update: Update, context: CallbackContext):
     elif role == "Employee":
         await emp_employee_dashboard(update, context)
     else:
-        text = MessageTemplates.format_error_message("Access Denied", "You do not have a registered role.")
-        if update.callback_query:
-            await update.callback_query.message.reply_text(text)
-        else:
-            await update.message.reply_text(text)
+        await update.message.reply_text(MessageTemplates.format_error_message("Access Denied", "You do not have a registered role."))
 
 async def help_command(update: Update, context: CallbackContext):
     text = (
