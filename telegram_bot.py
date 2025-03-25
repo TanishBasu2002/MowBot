@@ -7,11 +7,11 @@
 #   "Director Dashboard" and "Employee Dashboard" for testing.
 # - Director Dashboard: Shows two buttons:
 #     • "Assign Jobs" – opens a submenu with all unassigned sites (paginated, 10 per page)
-#       for selection (tick/untick) using job IDs so selections appear green, then
-#       an "Assign Selected" button lets you assign to either Andy or Alex.
+#       for selection (tick/untick using job ID so selection appears green),
+#       then an "Assign Selected" button to assign them to either Andy or Alex.
 #     • "View Completed Jobs" – lists all completed jobs for today.
-# - Employee Dashboard: Shows assigned jobs (that are not yet completed) with inline
-#   buttons for starting/finishing jobs, site info, map link, and uploading photos.
+# - Employee Dashboard: Shows assigned (but not completed) jobs with inline buttons
+#   for start/finish, site info, map link, and uploading photos.
 #   The "Upload Photo" button prompts the employee to manually attach a photo.
 # - All inline actions update the same message (smooth inline editing).
 #
@@ -44,7 +44,7 @@ from telegram.ext import (
 )
 from telegram.error import BadRequest
 
-# Custom modules – ensure these work as expected.
+# Custom modules – ensure these exist and work as expected.
 from src.bot.utils.message_templates import MessageTemplates
 from src.bot.utils.button_layouts import ButtonLayouts
 from src.bot.database.models import get_db, Ground
@@ -263,7 +263,7 @@ async def handle_text(update: Update, context: CallbackContext):
 
 async def handle_toggle_job(update: Update, context: CallbackContext):
     data = update.callback_query.data
-    # Now using job_id for selection.
+    # Use job ID for selection.
     job_id = int(data.split("_")[-1])
     try:
         selected_jobs = context.user_data.get("selected_jobs", set())
@@ -279,40 +279,45 @@ async def handle_toggle_job(update: Update, context: CallbackContext):
         logger.error(f"Error toggling job: {e}")
         await update.callback_query.answer("Error toggling job selection.", show_alert=True)
 
+# Modified to unpack job tuples with either 7 or 8 fields.
 async def format_job_section(section_title: str, jobs: list) -> list:
-    status_emoji = MessageTemplates.STATUS_EMOJIS.get(jobs[0][5].lower(), '❓')
-    sections = [f"\n{status_emoji} {section_title} Jobs:"]
+    sections = [f"\n{MessageTemplates.STATUS_EMOJIS.get(jobs[0][3].lower(), '❓')} {section_title} Jobs:"]
     for job in jobs:
-        job_id, site_name, scheduled_date, start_time, finish_time, status, area, notes = job
-        duration_str = "N/A"
+        if len(job) == 8:
+            job_id, site_name, scheduled_date, start_time, finish_time, status, area, notes = job
+        elif len(job) == 7:
+            job_id, site_name, area, status, notes, start_time, finish_time = job
+        else:
+            continue
+        duration = "N/A"
         if start_time and finish_time:
             try:
-                start_dt = datetime.fromisoformat(start_time)
-                finish_dt = datetime.fromisoformat(finish_time)
-                duration_str = str(finish_dt - start_dt).split('.')[0]
+                duration = str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0]
             except Exception:
-                duration_str = "N/A"
-        sections.append(MessageTemplates.format_job_card(site_name=site_name, status=status, area=area, duration=duration_str, notes=notes))
+                duration = "N/A"
+        sections.append(MessageTemplates.format_job_card(site_name=site_name, status=status, area=area, duration=duration, notes=notes))
     return sections
 
 async def create_job_buttons(jobs: list) -> list:
     buttons = []
     for job in jobs:
-        job_id, site_name, scheduled_date, start_time, finish_time, status, area, _ = job
-        status_emoji = MessageTemplates.STATUS_EMOJIS.get(status.lower(), '❓')
+        if len(job) == 8:
+            job_id, site_name, scheduled_date, start_time, finish_time, status, area, notes = job
+        elif len(job) == 7:
+            job_id, site_name, area, status, notes, start_time, finish_time = job
+        else:
+            continue
         duration = ""
         if start_time and finish_time:
             try:
-                start_dt = datetime.fromisoformat(start_time)
-                finish_dt = datetime.fromisoformat(finish_time)
-                duration = f" ({str(finish_dt - start_dt).split('.')[0]})"
+                duration = f" ({str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0]})"
             except Exception:
                 pass
-        buttons.append([InlineKeyboardButton(f"{status_emoji} {site_name}{duration}", callback_data=f"view_job_{job_id}")])
+        buttons.append([InlineKeyboardButton(f"{MessageTemplates.STATUS_EMOJIS.get(status.lower(), '❓')} {site_name}{duration}", callback_data=f"view_job_{job_id}")])
     return buttons
 
 async def build_director_assign_jobs_page(page: int, context: CallbackContext) -> tuple:
-    jobs_per_page = 10  # Increased from 5 to 10.
+    jobs_per_page = 10
     offset = (page - 1) * jobs_per_page
     cursor.execute(
         """
@@ -333,8 +338,7 @@ async def build_director_assign_jobs_page(page: int, context: CallbackContext) -
     text_parts = [MessageTemplates.format_job_list_header("Available Jobs", len(jobs))]
     for job_id, site_name, area, status in jobs:
         is_selected = job_id in selected_jobs
-        status_emoji = MessageTemplates.STATUS_EMOJIS.get(status.lower(), '❓')
-        text_parts.append(f"{'✅' if is_selected else '⬜️'} {status_emoji} {site_name} ({area or 'No Area'})")
+        text_parts.append(f"{'✅' if is_selected else '⬜️'} {MessageTemplates.STATUS_EMOJIS.get(status.lower(), '❓')} {site_name} ({area or 'No Area'})")
     keyboard = []
     for job_id, site_name, area, status in jobs:
         is_selected = job_id in selected_jobs
@@ -400,7 +404,7 @@ async def director_view_andys_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 1672989849, "Andy")
 
 async def director_view_alexs_jobs(update: Update, context: CallbackContext):
-    await director_view_employee_jobs(update, context, 777888999, "Alex")  # Adjusted ID if needed.
+    await director_view_employee_jobs(update, context, 777888999, "Alex")
 
 #######################################
 # DEV FUNCTIONS
@@ -439,15 +443,13 @@ async def director_send_job(update: Update, context: CallbackContext):
         return
     site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area = row
     contact, gate_code = update_site_info(site_name, contact, gate_code)
-    duration_str = "N/A"
+    duration = "N/A"
     if start_time and finish_time:
         try:
-            start_dt = datetime.fromisoformat(start_time)
-            finish_dt = datetime.fromisoformat(finish_time)
-            duration_str = str(finish_dt - start_dt).split('.')[0]
+            duration = str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0]
         except Exception:
-            duration_str = "N/A"
-    sections = [MessageTemplates.format_job_card(site_name=site_name, status="completed" if finish_dt else "in_progress", area=area, duration=duration_str, notes=notes)]
+            duration = "N/A"
+    sections = [MessageTemplates.format_job_card(site_name=site_name, status="completed" if finish_dt else "in_progress", area=area, duration=duration, notes=notes)]
     if contact or gate_code:
         sections.append(MessageTemplates.format_site_info(site_name=site_name, contact=contact, gate_code=gate_code, address=None, special_instructions=None))
     keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]]
@@ -582,7 +584,6 @@ async def assign_jobs_to_employee(update: Update, context: CallbackContext):
         await safe_edit_text(update, MessageTemplates.format_error_message("Database Error", "Failed to assign jobs. Please try again."))
 
 async def director_calendar_view(update: Update, context: CallbackContext):
-    # List completed jobs for today.
     cursor.execute(
         """
         SELECT id, site_name, area, status, notes, start_time, finish_time 
@@ -636,9 +637,7 @@ async def emp_view_jobs(update: Update, context: CallbackContext):
         duration = ""
         if start_time and finish_time:
             try:
-                start_dt = datetime.fromisoformat(start_time)
-                finish_dt = datetime.fromisoformat(finish_time)
-                duration = f" ({str(finish_dt - start_dt).split('.')[0]})"
+                duration = f" ({str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0]})"
             except Exception:
                 pass
         keyboard.append([InlineKeyboardButton(f"{prefix}{site_name} ({area or 'No Area'}) [{status.capitalize()}]{duration}", callback_data=f"job_menu_{job_id}")])
