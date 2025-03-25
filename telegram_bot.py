@@ -15,7 +15,7 @@
 #    • All actions update the same message (smooth inline editing)
 # - Dev Dashboard for debugging access.
 #
-# All inline actions use update.effective_message for a smooth UX.
+# All inline actions use update.effective_message for smooth UX.
 ######################################################
 
 import os
@@ -47,7 +47,7 @@ from telegram.ext import (
 )
 from telegram.error import BadRequest
 
-# Custom modules – ensure these modules exist and work as expected.
+# Custom modules – ensure these exist and work as expected
 from src.bot.utils.message_templates import MessageTemplates
 from src.bot.utils.button_layouts import ButtonLayouts
 from src.bot.database.models import get_db, Ground
@@ -145,7 +145,7 @@ except sqlite3.OperationalError as e:
     logger.info("New columns likely already exist.")
 
 #######################################
-# HANDLERS (All functions are async)
+# HANDLERS (All handlers are async)
 #######################################
 
 async def handle_photo(update: Update, context: CallbackContext):
@@ -242,7 +242,7 @@ async def handle_toggle_job(update: Update, context: CallbackContext):
             selected_jobs.add(job_id)
         context.user_data["selected_jobs"] = selected_jobs
         current_page = context.user_data.get("current_page", 1)
-        text, markup = build_director_assign_jobs_page(current_page, context)
+        text, markup = await build_director_assign_jobs_page(current_page, context)
         await safe_edit_text(update, text, reply_markup=markup)
     except Exception as e:
         logger.error(f"Error toggling job selection: {e}")
@@ -282,7 +282,6 @@ async def create_job_buttons(jobs: list) -> list:
 
 async def build_director_assign_jobs_page(page: int, context: CallbackContext) -> tuple:
     jobs_per_page = 5
-    # Note: The query is simplified – adjust as needed for pagination.
     cursor.execute(
         """
         SELECT id, site_name, area, status 
@@ -384,7 +383,6 @@ async def director_view_alexs_jobs(update: Update, context: CallbackContext):
 #######################################
 
 async def dev_dashboard(update: Update, context: CallbackContext):
-    # Since ButtonLayouts.create_dev_dashboard is not available, we define a simple inline keyboard for the Dev Dashboard.
     user_id = update.effective_user.id
     name = employee_users.get(user_id, "Developer")
     header = MessageTemplates.format_dashboard_header(name, "Developer")
@@ -516,7 +514,7 @@ async def director_dashboard(update: Update, context: CallbackContext):
         MessageTemplates.SEPARATOR
     ]
     message_text = f"{header}\n\n" + "\n".join(stats)
-    # Custom director dashboard inline keyboard
+    # Use a simple director dashboard inline keyboard:
     director_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("View Unassigned Jobs", callback_data="dir_assign_jobs")],
         [InlineKeyboardButton("View Completed Jobs", callback_data="calendar_view")]
@@ -881,7 +879,7 @@ def start_profit_thread():
     profit_thread = threading.Thread(target=accumulate_profit, daemon=True)
     profit_thread.start()
 
-async def main() -> None:
+def main() -> None:
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
@@ -889,10 +887,7 @@ async def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(CallbackQueryHandler(callback_handler))
     start_profit_thread()
-    await application.run_polling()
+    application.run_polling()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    main()
