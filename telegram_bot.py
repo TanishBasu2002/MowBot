@@ -8,8 +8,7 @@
 # - Director Dashboard:
 #    • View unassigned jobs in pages (neatly formatted)
 #    • Tick/untick (select/unselect) jobs
-#    • Assign selected jobs to Andy or Alex
-#    • Select day of week for assignment
+#    • Assign selected jobs to Andy or Alex and select a day of the week
 #    • View completed jobs and job details (photos, data)
 # - Employee Dashboard:
 #    • View daily jobs with inline buttons for start/finish, site info, map link, and upload photos
@@ -39,7 +38,7 @@ from telegram import (
     InputMediaPhoto
 )
 from telegram.ext import (
-    Updater,
+    ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
     CallbackContext,
@@ -72,7 +71,7 @@ logger = logging.getLogger(__name__)
 # Global dictionary for simulation user data (if needed)
 user_data = {}
 
-# Helper function for safe inline editing
+# Helper function for safe inline editing using update.effective_message.
 def safe_edit_text(update: Update, text: str, reply_markup: InlineKeyboardMarkup = None):
     try:
         update.effective_message.edit_text(text, reply_markup=reply_markup)
@@ -165,9 +164,7 @@ def handle_photo(update: Update, context: CallbackContext):
             img.save(photo_path, format='JPEG')
     except Exception as e:
         logger.error(f"Error processing photo: {e}")
-        update.message.reply_text(
-            MessageTemplates.format_error_message("Photo Error", "Failed to process the photo. Please try again.", code="PHOTO_ERROR")
-        )
+        update.message.reply_text(MessageTemplates.format_error_message("Photo Error", "Failed to process the photo. Please try again.", code="PHOTO_ERROR"))
         return
     try:
         cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
@@ -176,9 +173,7 @@ def handle_photo(update: Update, context: CallbackContext):
         new_photos = current.strip() + "|" + photo_path if current and current.strip() else photo_path
         current_count = len(current.split("|")) if current and current.strip() else 0
         if current_count >= 25:
-            update.message.reply_text(
-                MessageTemplates.format_error_message("Photo Limit Reached", "Maximum number of photos (25) reached for this job.", code="PHOTO_LIMIT")
-            )
+            update.message.reply_text(MessageTemplates.format_error_message("Photo Limit Reached", "Maximum number of photos (25) reached for this job.", code="PHOTO_LIMIT"))
             return
         cursor.execute("UPDATE grounds_data SET photos = ? WHERE id = ?", (new_photos, job_id))
         conn.commit()
@@ -192,9 +187,7 @@ def handle_photo(update: Update, context: CallbackContext):
         update.message.reply_text(confirmation_text, reply_markup=markup)
     except sqlite3.Error as e:
         logger.error(f"Database error while saving photo: {e}")
-        update.message.reply_text(
-            MessageTemplates.format_error_message("Database Error", "Failed to save photo. Please try again.", code="DB_ERROR")
-        )
+        update.message.reply_text(MessageTemplates.format_error_message("Database Error", "Failed to save photo. Please try again.", code="DB_ERROR"))
 
 def handle_text(update: Update, context: CallbackContext):
     if "awaiting_note_for" in context.user_data:
@@ -295,7 +288,6 @@ def build_director_assign_jobs_page(page: int, context: CallbackContext) -> tupl
         FROM grounds_data 
         WHERE assigned_to IS NULL 
         ORDER BY id
-        LIMIT ? OFFSET ?
         """, (jobs_per_page, page * jobs_per_page)
     )
     jobs = cursor.fetchall()
@@ -659,13 +651,9 @@ def emp_job_menu(update: Update, context: CallbackContext):
         safe_edit_text(update, MessageTemplates.format_error_message("Job not found", code="JOB_404"))
         return
     site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos = job_data
-    sections = [MessageTemplates.format_job_card(
-        site_name=site_name,
-        status=status,
-        area=area,
-        duration=(str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0] if start_time and finish_time else "N/A"),
-        notes=notes
-    )]
+    sections = [MessageTemplates.format_job_card(site_name=site_name, status=status, area=area,
+                duration=(str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0] if start_time and finish_time else "N/A"),
+                notes=notes)]
     if contact or gate_code:
         sections.append(MessageTemplates.format_site_info(site_name=site_name, contact=contact, gate_code=gate_code, address=None, special_instructions=None))
     keyboard = []
@@ -890,17 +878,18 @@ def start_profit_thread():
     profit_thread = threading.Thread(target=accumulate_profit, daemon=True)
     profit_thread.start()
 
+# Updated main function using ApplicationBuilder (PTB v20+)
+from telegram.ext import ApplicationBuilder
+
 def main() -> None:
-    updater = Updater(TELEGRAM_BOT_TOKEN)  # Using our dotenv token; removed update_queue parameter
-    dispatcher = updater.dispatcher
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("help", help_command))
-    dispatcher.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
-    dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    dispatcher.add_handler(CallbackQueryHandler(callback_handler))
+    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(CallbackQueryHandler(callback_handler))
     start_profit_thread()
-    updater.start_polling()
-    updater.idle()
+    application.run_polling()
 
 if __name__ == "__main__":
     try:
