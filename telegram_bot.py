@@ -3,19 +3,19 @@
 # TELEGRAM_BOT.PY (ULTIMATE VERSION V8 - ENHANCED MowBot MVP)
 #
 # Features:
-# - Enhanced UI Components: Professional message templates and button layouts
-# - Photo Upload Enhancement: Splits media groups into chunks of 10 (up to 25 photos)
-# - Director Dashboard:
-#    • View unassigned jobs (labeled "Assign Jobs") in pages (neatly formatted)
-#    • Tick/untick (select/unselect) jobs for assignment
-#    • Assign selected jobs to Andy or Alex and select a day of the week
-#    • View completed jobs and job details (photos, data)
-# - Employee Dashboard:
-#    • View daily jobs with inline buttons for start/finish, site info, map link, and upload photos
-#    • All actions update the same message (smooth inline editing)
-# - Dev Dashboard for debugging access (redirects to the director's assign jobs view)
+# - Dev Dashboard: Dedicated view for the developer with buttons
+#   "Director Dashboard" and "Employee Dashboard" for testing.
+# - Director Dashboard: Shows two buttons:
+#     • "Assign Jobs" – opens a submenu with all unassigned sites (paginated)
+#       where the director can tick/untick jobs and then press "Assign Selected"
+#       to assign to either Andy or Alex.
+#     • "View Completed Jobs" – (stub view for now).
+# - Employee Dashboard: Shows assigned jobs with inline buttons for
+#   start/finish, site info, map link, and upload photo. The upload photo
+#   button prompts the employee to send a photo.
+# - All inline actions update the same message (smooth inline editing).
 #
-# All inline actions use update.effective_message for smooth UX.
+# Note: Ensure your Telegram dev user ID is only in dev_users.
 ######################################################
 
 import os
@@ -25,10 +25,8 @@ from datetime import datetime, timedelta
 import asyncio
 from PIL import Image
 import io
-import pytz
 import time
 import threading
-import sys
 
 # Import telegram modules (using lowercase filters for PTB v20+)
 from telegram import (
@@ -47,7 +45,7 @@ from telegram.ext import (
 )
 from telegram.error import BadRequest
 
-# Custom modules – ensure these work as expected.
+# Custom modules – adjust these if needed.
 from src.bot.utils.message_templates import MessageTemplates
 from src.bot.utils.button_layouts import ButtonLayouts
 from src.bot.database.models import get_db, Ground
@@ -68,10 +66,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global dictionary for simulation user data (if needed)
+# Global dictionary for simulation user data
 user_data = {}
 
-# Async helper function for safe inline editing using update.effective_message.
+# Async helper for safe inline editing
 async def safe_edit_text(update: Update, text: str, reply_markup: InlineKeyboardMarkup = None):
     try:
         await update.effective_message.edit_text(text, reply_markup=reply_markup)
@@ -83,9 +81,11 @@ async def safe_edit_text(update: Update, text: str, reply_markup: InlineKeyboard
 # ROLES & USERS
 #####################
 
-dev_users = {1672989849}
-director_users = {1672989849, 7996550019, 8018680694}
-employee_users = {1672989849: "Andy", 6396234665: "Alex"}
+# Set your IDs appropriately:
+dev_users = {1672989849}         # Replace 123456789 with your dev Telegram user ID.
+director_users = {987654321, 111222333}  # Two director IDs.
+employee_users = {444555666: "Andy", 777888999: "Alex"}  # Two employee IDs.
+# Ensure your dev ID is only in dev_users, not in employee_users.
 
 def get_user_role(user_id: int) -> str:
     if user_id in dev_users:
@@ -129,23 +129,21 @@ cursor.executescript(
     );
     """
 )
-
 cursor.executescript(""" 
     CREATE INDEX IF NOT EXISTS idx_grounds_assigned_to ON grounds_data(assigned_to);
     CREATE INDEX IF NOT EXISTS idx_grounds_status ON grounds_data(status);
     CREATE INDEX IF NOT EXISTS idx_grounds_site_name ON grounds_data(site_name);
 """)
-
 try:
     cursor.execute("ALTER TABLE grounds_data ADD COLUMN scheduled_date TEXT;")
     cursor.execute("ALTER TABLE grounds_data ADD COLUMN priority TEXT DEFAULT 'normal';")
     conn.commit()
-    logger.info("Added new columns to grounds_data.")
-except sqlite3.OperationalError as e:
-    logger.info("New columns likely already exist.")
+    logger.info("Database setup complete: New columns added.")
+except sqlite3.OperationalError:
+    logger.info("Database setup: New columns likely already exist.")
 
 #######################################
-# HANDLERS (All handlers are async)
+# HANDLERS (All async)
 #######################################
 
 async def handle_photo(update: Update, context: CallbackContext):
@@ -164,7 +162,7 @@ async def handle_photo(update: Update, context: CallbackContext):
             img.verify()
             img.save(photo_path, format='JPEG')
     except Exception as e:
-        logger.error(f"Error processing photo: {e}")
+        logger.error(f"Photo processing error: {e}")
         await update.message.reply_text(MessageTemplates.format_error_message("Photo Error", "Failed to process the photo.", "PHOTO_ERROR"))
         return
     try:
@@ -174,7 +172,7 @@ async def handle_photo(update: Update, context: CallbackContext):
         new_photos = current.strip() + "|" + photo_path if current and current.strip() else photo_path
         current_count = len(current.split("|")) if current and current.strip() else 0
         if current_count >= 25:
-            await update.message.reply_text(MessageTemplates.format_error_message("Photo Limit Reached", "Maximum number of photos reached for this job.", "PHOTO_LIMIT"))
+            await update.message.reply_text(MessageTemplates.format_error_message("Photo Limit Reached", "Maximum number of photos reached.", "PHOTO_LIMIT"))
             return
         cursor.execute("UPDATE grounds_data SET photos = ? WHERE id = ?", (new_photos, job_id))
         conn.commit()
@@ -187,7 +185,7 @@ async def handle_photo(update: Update, context: CallbackContext):
         markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(confirmation_text, reply_markup=markup)
     except sqlite3.Error as e:
-        logger.error(f"Database error while saving photo: {e}")
+        logger.error(f"Database error (photo save): {e}")
         await update.message.reply_text(MessageTemplates.format_error_message("Database Error", "Failed to save photo.", "DB_ERROR"))
 
 async def handle_text(update: Update, context: CallbackContext):
@@ -198,7 +196,7 @@ async def handle_text(update: Update, context: CallbackContext):
             cursor.execute("SELECT site_name FROM grounds_data WHERE id = ?", (job_id,))
             result = cursor.fetchone()
             if not result:
-                await update.message.reply_text(MessageTemplates.format_error_message("Job not found", "The job you requested was not found.", "JOB_404"))
+                await update.message.reply_text(MessageTemplates.format_error_message("Job not found", "The job was not found.", "JOB_404"))
                 return
             site_name = result[0]
             cursor.execute("UPDATE grounds_data SET notes = ? WHERE id = ?", (note, job_id))
@@ -210,7 +208,7 @@ async def handle_text(update: Update, context: CallbackContext):
             markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(MessageTemplates.format_success_message("Note Updated", f"Note updated for {site_name} (Job {job_id})."), reply_markup=markup)
         except sqlite3.Error as e:
-            logger.error(f"Database error while updating note: {e}")
+            logger.error(f"Database error (note update): {e}")
             await update.message.reply_text(MessageTemplates.format_error_message("Database Error", "Failed to update note.", "DB_ERROR"))
         return
     if "awaiting_notes" in context.user_data and context.user_data["awaiting_notes"]:
@@ -229,7 +227,7 @@ async def handle_text(update: Update, context: CallbackContext):
             await update.message.reply_text(MessageTemplates.format_success_message("Notes Added", f"Notes added to {updated_count} job(s)."))
             await director_assign_jobs(update, context)
         except sqlite3.Error as e:
-            logger.error(f"Database error while adding notes: {e}")
+            logger.error(f"Database error (add notes): {e}")
             await update.message.reply_text(MessageTemplates.format_error_message("Database Error", "Failed to add notes.", "DB_ERROR"))
 
 async def handle_toggle_job(update: Update, context: CallbackContext):
@@ -246,8 +244,8 @@ async def handle_toggle_job(update: Update, context: CallbackContext):
         text, markup = await build_director_assign_jobs_page(current_page, context)
         await safe_edit_text(update, text, reply_markup=markup)
     except Exception as e:
-        logger.error(f"Error toggling job selection: {e}")
-        await update.callback_query.answer("Error toggling job selection. Please try again.", show_alert=True)
+        logger.error(f"Error toggling job: {e}")
+        await update.callback_query.answer("Error toggling job selection.", show_alert=True)
 
 async def format_job_section(section_title: str, jobs: list) -> list:
     status_emoji = MessageTemplates.STATUS_EMOJIS.get(jobs[0][5].lower(), '❓')
@@ -384,8 +382,14 @@ async def director_view_alexs_jobs(update: Update, context: CallbackContext):
 #######################################
 
 async def dev_dashboard(update: Update, context: CallbackContext):
-    # For dev, simply show the director's "Assign Jobs" view.
-    await director_dashboard(update, context)
+    # Dev dashboard: show a dedicated view with buttons to access director and employee dashboards.
+    user_id = update.effective_user.id
+    header = MessageTemplates.format_dashboard_header("Dev", "Developer")
+    dev_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Director Dashboard", callback_data="dev_director_dashboard")],
+        [InlineKeyboardButton("Employee Dashboard", callback_data="dev_employee_dashboard")]
+    ])
+    await safe_edit_text(update, header, reply_markup=dev_kb)
 
 async def dev_director_dashboard(update: Update, context: CallbackContext):
     await director_dashboard(update, context)
@@ -485,7 +489,8 @@ async def director_assign_day_selected(update: Update, context: CallbackContext)
 
 async def director_dashboard(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-    name = employee_users.get(user_id, "Director")
+    # For director, use their name from director_users or default.
+    name = "Director"  # You can customize this further.
     header = MessageTemplates.format_dashboard_header(name, "Director")
     total_jobs = len(cursor.execute("SELECT id FROM grounds_data").fetchall())
     active_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'in_progress'").fetchall())
@@ -498,7 +503,7 @@ async def director_dashboard(update: Update, context: CallbackContext):
         MessageTemplates.SEPARATOR
     ]
     message_text = f"{header}\n\n" + "\n".join(stats)
-    # Updated inline keyboard: "Assign Jobs" button (shows unassigned jobs)
+    # Director dashboard now shows "Assign Jobs" and "View Completed Jobs"
     director_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("Assign Jobs", callback_data="dir_assign_jobs")],
         [InlineKeyboardButton("View Completed Jobs", callback_data="calendar_view")]
@@ -553,30 +558,25 @@ async def director_assign_jobs(update: Update, context: CallbackContext):
 async def assign_jobs_to_employee(update: Update, context: CallbackContext):
     employee_id = int(update.callback_query.data.split("_")[-1])
     selected_jobs = context.user_data.get("selected_jobs", set())
-    selected_day = context.user_data.get("selected_day")
+    # For now, ignore the day (calendar) functionality.
     if not selected_jobs:
         await safe_edit_text(update, MessageTemplates.format_error_message("No Jobs Selected", "Please select jobs before assigning.", "NO_JOBS_SELECTED"))
         return
-    if not selected_day:
-        await director_select_day_for_assignment(update, context)
-        return
     try:
         for site_name in selected_jobs:
-            cursor.execute("UPDATE grounds_data SET assigned_to = ?, scheduled_date = ? WHERE site_name = ?", (employee_id, selected_day, site_name))
+            cursor.execute("UPDATE grounds_data SET assigned_to = ? WHERE site_name = ?", (employee_id, site_name))
         conn.commit()
-        message = MessageTemplates.format_success_message("Jobs Assigned", f"Selected jobs have been assigned to {employee_users.get(employee_id, 'Employee')} for {selected_day}.")
+        message = MessageTemplates.format_success_message("Jobs Assigned", f"Selected jobs have been assigned to {employee_users.get(employee_id, 'Employee')}.")
         await safe_edit_text(update, message)
         if "selected_jobs" in context.user_data:
             del context.user_data["selected_jobs"]
-        if "selected_day" in context.user_data:
-            del context.user_data["selected_day"]
         await director_dashboard(update, context)
     except sqlite3.Error as e:
         logger.error(f"Database error while assigning jobs: {e}")
         await safe_edit_text(update, MessageTemplates.format_error_message("Database Error", "Failed to assign jobs. Please try again.", "DB_ERROR"))
 
 async def director_calendar_view(update: Update, context: CallbackContext):
-    text = MessageTemplates.format_success_message("Calendar View", "Calendar View: [Feature coming soon - This is a stub]")
+    text = MessageTemplates.format_success_message("Calendar View", "Calendar View: [Feature coming soon]")
     keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]]
     markup = InlineKeyboardMarkup(keyboard)
     await safe_edit_text(update, text, reply_markup=markup)
@@ -709,7 +709,7 @@ async def emp_upload_photo(update: Update, context: CallbackContext):
     context.user_data["awaiting_photo_for"] = job_id
     keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.CANCEL_PREFIX} Cancel", callback_data=f"job_menu_{job_id}")]]
     markup = InlineKeyboardMarkup(keyboard)
-    await safe_edit_text(update, MessageTemplates.format_input_prompt("Please send the photo for this job:"), reply_markup=markup)
+    await safe_edit_text(update, MessageTemplates.format_input_prompt("Please send the photo for this job.\n\n(Manually attach and send a photo.)"), reply_markup=markup)
 
 async def emp_site_info(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
@@ -840,9 +840,10 @@ async def help_command(update: Update, context: CallbackContext):
         "*/start* - Launch the bot and navigate to your dashboard.\n"
         "*/help* - Show this help message.\n\n"
         "Use the inline buttons to navigate dashboards and manage jobs.\n"
-        "- *Director*: Assign jobs, edit job notes, view job details with photos, and view completed jobs.\n"
-        "- *Employee*: View your assigned jobs, start/finish jobs, and upload photos.\n"
-        "- *Dev*: Access debug dashboards (redirects to the director's assign jobs view).\n\n"
+        "- *Director*: See 'Assign Jobs' and 'View Completed Jobs'.\n"
+        "   • 'Assign Jobs' lists all unassigned sites (paginated) for selection, then lets you assign them to Andy or Alex.\n"
+        "- *Employee*: View your assigned jobs, start/finish jobs, and upload photos (tap 'Upload Photo' then send a photo manually).\n"
+        "- *Dev*: Access a dedicated Dev Dashboard with buttons for both Director and Employee dashboards.\n\n"
         "If you have any questions, ask your system admin."
     )
     if update.callback_query:
