@@ -11,7 +11,7 @@
 #       button to assign them to either Andy or Alex.
 #     • "View Completed Jobs" – shows a submenu with "Andy" and "Alex" buttons;
 #       choosing one displays that employee’s completed jobs as buttons. Tapping a job button
-#       sends a message with the job’s details, photos, etc., and includes back buttons.
+#       shows its details (including photos) with back buttons.
 # - Employee Dashboard: Shows assigned (but not completed) jobs with inline buttons for
 #   starting/finishing jobs, viewing site info, map link, and uploading photos.
 #   The "Upload Photo" button prompts the employee to manually attach and send a photo.
@@ -170,9 +170,92 @@ try:
 except sqlite3.OperationalError:
     logger.info("Database setup: New columns likely already exist.")
 
-#######################################
-# HANDLERS (All async)
-#######################################
+#####################################
+# HELPER FUNCTIONS (Defined early)
+#####################################
+
+async def format_job_section(section_title: str, jobs: list) -> list:
+    # This function now handles tuples with 7 or 8 fields.
+    if len(jobs[0]) == 8:
+        status_val = jobs[0][5]
+    else:
+        status_val = jobs[0][3]
+    sections = [f"\n{MessageTemplates.STATUS_EMOJIS.get(status_val.lower(), '❓')} {section_title} Jobs:"]
+    for job in jobs:
+        if len(job) == 8:
+            job_id, site_name, scheduled_date, start_time, finish_time, status, area, notes = job
+        elif len(job) == 7:
+            job_id, site_name, area, status, notes, start_time, finish_time = job
+        else:
+            continue
+        duration = "N/A"
+        if start_time and finish_time:
+            try:
+                duration = str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0]
+            except Exception:
+                duration = "N/A"
+        sections.append(MessageTemplates.format_job_card(site_name=site_name, status=status, area=area, duration=duration, notes=notes))
+    return sections
+
+async def create_job_buttons(jobs: list) -> list:
+    buttons = []
+    for job in jobs:
+        if len(job) == 8:
+            job_id, site_name, scheduled_date, start_time, finish_time, status, area, notes = job
+        elif len(job) == 7:
+            job_id, site_name, area, status, notes, start_time, finish_time = job
+        else:
+            continue
+        duration = ""
+        if start_time and finish_time:
+            try:
+                duration = f" ({str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0]})"
+            except Exception:
+                pass
+        buttons.append([InlineKeyboardButton(f"{MessageTemplates.STATUS_EMOJIS.get(status.lower(), '❓')} {site_name}{duration}", callback_data=f"view_job_{job_id}")])
+    return buttons
+
+async def build_director_assign_jobs_page(page: int, context: CallbackContext) -> tuple:
+    jobs_per_page = 10
+    offset = (page - 1) * jobs_per_page
+    cursor.execute(
+        """
+        SELECT id, site_name, area, status 
+        FROM grounds_data 
+        WHERE assigned_to IS NULL 
+        ORDER BY id
+        LIMIT ? OFFSET ?
+        """, (jobs_per_page, offset)
+    )
+    jobs = cursor.fetchall()
+    if not jobs:
+        return (
+            MessageTemplates.format_success_message("No Jobs Available", "There are no unassigned jobs available."),
+            InlineKeyboardMarkup([[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]])
+        )
+    selected_jobs = context.user_data.get("selected_jobs", set())
+    text_parts = [MessageTemplates.format_job_list_header("Available Jobs", len(jobs))]
+    for job_id, site_name, area, status in jobs:
+        is_selected = job_id in selected_jobs
+        text_parts.append(f"{'✅' if is_selected else '⬜️'} {MessageTemplates.STATUS_EMOJIS.get(status.lower(), '❓')} {site_name} ({area or 'No Area'})")
+    keyboard = []
+    for job_id, site_name, area, status in jobs:
+        is_selected = job_id in selected_jobs
+        keyboard.append([InlineKeyboardButton(f"{'✅' if is_selected else '⬜️'} {site_name}", callback_data=f"toggle_job_{job_id}")])
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"page_{page-1}"))
+    nav_buttons.append(InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard"))
+    if len(jobs) == jobs_per_page:
+        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}"))
+    keyboard.append(nav_buttons)
+    if selected_jobs:
+        keyboard.append([InlineKeyboardButton("✅ Assign Selected", callback_data="assign_selected_jobs")])
+    return "\n\n".join(text_parts), InlineKeyboardMarkup(keyboard)
+
+#####################################
+# HANDLER FUNCTIONS
+#####################################
 
 async def handle_photo(update: Update, context: CallbackContext):
     if "awaiting_photo_for" not in context.user_data:
@@ -263,9 +346,22 @@ async def handle_text(update: Update, context: CallbackContext):
             logger.error(f"Database error (add notes): {e}")
             await update.message.reply_text(MessageTemplates.format_error_message("Database Error", "Failed to add notes."))
 
-#####################
-# EMPLOYEE FUNCTIONS
-#####################
+async def handle_toggle_job(update: Update, context: CallbackContext):
+    data = update.callback_query.data
+    job_id = int(data.split("_")[-1])
+    try:
+        selected_jobs = context.user_data.get("selected_jobs", set())
+        if job_id in selected_jobs:
+            selected_jobs.remove(job_id)
+        else:
+            selected_jobs.add(job_id)
+        context.user_data["selected_jobs"] = selected_jobs
+        current_page = context.user_data.get("current_page", 1)
+        text, markup = await build_director_assign_jobs_page(current_page, context)
+        await safe_edit_text(update, text, reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Error toggling job: {e}")
+        await update.callback_query.answer("Error toggling job selection.", show_alert=True)
 
 async def emp_view_jobs(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
@@ -421,9 +517,9 @@ async def emp_map_link(update: Update, context: CallbackContext):
     markup = InlineKeyboardMarkup(keyboard)
     await safe_edit_text(update, f"🗺 Map Link for {site_name}:\n{map_link}", reply_markup=markup)
 
-#####################
+#####################################
 # DIRECTOR FUNCTIONS
-#####################
+#####################################
 
 async def director_send_job(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
@@ -581,7 +677,6 @@ async def assign_jobs_to_employee(update: Update, context: CallbackContext):
         await safe_edit_text(update, MessageTemplates.format_error_message("Database Error", "Failed to assign jobs. Please try again."))
 
 async def director_calendar_view(update: Update, context: CallbackContext):
-    # Show submenu for completed jobs.
     kb = InlineKeyboardMarkup([
          [InlineKeyboardButton("Andy", callback_data="view_completed_jobs_1672989849")],
          [InlineKeyboardButton("Alex", callback_data="view_completed_jobs_777888999")],
@@ -632,9 +727,9 @@ async def director_view_andys_jobs(update: Update, context: CallbackContext):
 async def director_view_alexs_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 777888999, "Alex")
 
-#####################
+#####################################
 # DEV FUNCTIONS
-#####################
+#####################################
 
 async def dev_dashboard(update: Update, context: CallbackContext):
     header = MessageTemplates.format_dashboard_header("Dev", "Developer")
@@ -650,11 +745,10 @@ async def dev_director_dashboard(update: Update, context: CallbackContext):
 async def dev_employee_dashboard(update: Update, context: CallbackContext):
     await emp_employee_dashboard(update, context)
 
-#####################
+#####################################
 # CALLBACK HANDLER
-#####################
+#####################################
 
-# Ensure this is defined after all functions (emp_view_jobs etc.) have been defined.
 async def callback_handler(update: Update, context: CallbackContext):
     data = update.callback_query.data
     await update.callback_query.answer()
@@ -669,8 +763,8 @@ async def callback_handler(update: Update, context: CallbackContext):
         "emp_view_jobs": emp_view_jobs,
         "emp_employee_dashboard": emp_employee_dashboard,
         "add_notes": director_add_notes,
-        "dir_assign_jobs": director_assign_jobs,  # not used directly
-        "assign_selected_jobs": director_assign_jobs  # triggered after selection
+        "dir_assign_jobs": director_assign_jobs,
+        "assign_selected_jobs": director_assign_jobs
     }
     if data in handlers:
         await handlers[data](update, context)
@@ -721,18 +815,18 @@ async def callback_handler(update: Update, context: CallbackContext):
     else:
         await safe_edit_text(update, MessageTemplates.format_error_message("Unknown Action", "This action is not supported."))
 
-#######################################
+#####################################
 # DAILY RESET FUNCTION
-#######################################
+#####################################
 
 async def reset_completed_jobs():
     logger.info("Resetting completed jobs for a new day.")
     cursor.execute("UPDATE grounds_data SET status = 'pending', assigned_to = NULL, finish_time = NULL WHERE status = 'completed' AND (scheduled_date IS NULL OR scheduled_date = date('now','localtime'))")
     conn.commit()
 
-#######################################
+#####################################
 # START & HELP COMMANDS
-#######################################
+#####################################
 
 async def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
@@ -764,9 +858,9 @@ async def help_command(update: Update, context: CallbackContext):
     else:
         await update.message.reply_text(text, parse_mode='Markdown')
 
-#######################################
+#####################################
 # MAIN FUNCTION & SCHEDULER SETUP
-#######################################
+#####################################
 
 def start_profit_thread():
     def accumulate_profit():
