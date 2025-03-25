@@ -13,7 +13,7 @@
 # - Employee Dashboard:
 #    • View daily jobs with inline buttons for start/finish, site info, map link, and upload photos
 #    • All actions update the same message (smooth inline editing)
-# - Dev Dashboard for debugging access.
+# - Dev Dashboard for debugging access (redirects to director dashboard)
 #
 # All inline actions use update.effective_message for smooth UX.
 ######################################################
@@ -47,7 +47,7 @@ from telegram.ext import (
 )
 from telegram.error import BadRequest
 
-# Custom modules – ensure these exist and work as expected
+# Custom modules – ensure these work as expected
 from src.bot.utils.message_templates import MessageTemplates
 from src.bot.utils.button_layouts import ButtonLayouts
 from src.bot.database.models import get_db, Ground
@@ -150,6 +150,7 @@ except sqlite3.OperationalError as e:
 
 async def handle_photo(update: Update, context: CallbackContext):
     if "awaiting_photo_for" not in context.user_data:
+        await update.message.reply_text("No photo expected at this time.")
         return
     job_id = context.user_data["awaiting_photo_for"]
     photo_file = await update.message.photo[-1].get_file()
@@ -383,25 +384,8 @@ async def director_view_alexs_jobs(update: Update, context: CallbackContext):
 #######################################
 
 async def dev_dashboard(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    name = employee_users.get(user_id, "Developer")
-    header = MessageTemplates.format_dashboard_header(name, "Developer")
-    total_jobs = len(cursor.execute("SELECT id FROM grounds_data").fetchall())
-    active_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'in_progress'").fetchall())
-    completed_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'completed'").fetchall())
-    stats = [
-        f"📊 Today's Overview:",
-        f"• Total Jobs: {total_jobs}",
-        f"• Active: {active_jobs}",
-        f"• Completed: {completed_jobs}",
-        MessageTemplates.SEPARATOR
-    ]
-    message_text = f"{header}\n\n" + "\n".join(stats)
-    dev_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Director Dashboard", callback_data="dev_director_dashboard")],
-        [InlineKeyboardButton("Employee Dashboard", callback_data="dev_employee_dashboard")]
-    ])
-    await safe_edit_text(update, message_text, reply_markup=dev_kb)
+    # For dev, simply show the director dashboard (the "Assign Jobs" view)
+    await director_dashboard(update, context)
 
 async def dev_director_dashboard(update: Update, context: CallbackContext):
     await director_dashboard(update, context)
@@ -514,9 +498,9 @@ async def director_dashboard(update: Update, context: CallbackContext):
         MessageTemplates.SEPARATOR
     ]
     message_text = f"{header}\n\n" + "\n".join(stats)
-    # Use a simple director dashboard inline keyboard:
+    # Updated inline keyboard: "Assign Jobs" instead of "View Unassigned Jobs"
     director_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("View Unassigned Jobs", callback_data="dir_assign_jobs")],
+        [InlineKeyboardButton("Assign Jobs", callback_data="dir_assign_jobs")],
         [InlineKeyboardButton("View Completed Jobs", callback_data="calendar_view")]
     ])
     await safe_edit_text(update, message_text, reply_markup=director_kb)
@@ -856,9 +840,9 @@ async def help_command(update: Update, context: CallbackContext):
         "*/start* - Launch the bot and navigate to your dashboard.\n"
         "*/help* - Show this help message.\n\n"
         "Use the inline buttons to navigate dashboards and manage jobs.\n"
-        "- *Director*: View/assign jobs, edit individual job notes, view job details with photos, and use the Calendar for scheduling by day.\n"
-        "- *Employee*: View your assigned jobs (only today's), start/finish jobs, and upload photos.\n"
-        "- *Dev*: Access debug dashboards with Back buttons to return to the Dev Dashboard.\n\n"
+        "- *Director*: Assign jobs, edit individual job notes, view job details with photos, and view completed jobs.\n"
+        "- *Employee*: View your assigned jobs, start/finish jobs, and upload photos.\n"
+        "- *Dev*: Access debug dashboards (redirects to director's assign jobs view).\n\n"
         "If you have any questions, ask your system admin."
     )
     if update.callback_query:
