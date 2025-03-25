@@ -81,7 +81,7 @@ async def safe_edit_text(update: Update, text: str, reply_markup: InlineKeyboard
 #####################
 
 # Set your IDs appropriately.
-dev_users = {123456789}         # Replace with your dev Telegram user ID.
+dev_users = {1672989849}         # Replace with your dev Telegram user ID.
 director_users = {987654321, 111222333}  # Two director IDs.
 employee_users = {444555666: "Andy", 777888999: "Alex"}  # Two employee IDs.
 # Ensure your dev ID is only in dev_users.
