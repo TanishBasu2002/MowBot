@@ -1,3 +1,4 @@
+# file: src/bot/database/models.py
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, create_engine
@@ -66,7 +67,15 @@ class Ground(Base):
             duration = self.finish_time - self.start_time
             return str(duration).split('.')[0]
         return None
-
+class JobNote(Base):
+    __tablename__ = 'job_notes'
+    
+    id = Column(Integer, primary_key=True)
+    job_id = Column(Integer, ForeignKey('grounds_data.id'))
+    author_id = Column(Integer)
+    author_role = Column(String)
+    note = Column(String)
+    created_at = Column(DateTime, default=datetime.now)
 # Database initialization
 engine = create_engine(f'sqlite:///{DATABASE_PATH}')
 SessionLocal = sessionmaker(bind=engine)

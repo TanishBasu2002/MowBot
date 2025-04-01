@@ -1,3 +1,4 @@
+# file: src/bot/config/settings.py
 from typing import Dict, Set
 from pathlib import Path
 import os
@@ -20,11 +21,10 @@ class Roles:
     DIRECTOR = "Director"
     EMPLOYEE = "Employee"
     GENERIC = "Generic"
-
 # User IDs Configuration
-DEV_USERS: Set[int] = {1672989849}
-DIRECTOR_USERS: Set[int] = {1672989849, 7996550019, 8018680694}
-EMPLOYEE_USERS: Dict[int, str] = {1672989849: "Andy", 6396234665: "Alex"}
+dev_users = {1672989849}         # Replace with your dev Telegram user ID.
+director_users = {987654321, 111222333}  # Two director IDs.
+employee_users = {1672989849: "Andy", 777888999: "Alex"}  # Two employee IDs.
 
 # Database Configuration
 DATABASE_PATH = BASE_DIR / "bot_data.db"

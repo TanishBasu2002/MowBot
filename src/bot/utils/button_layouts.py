@@ -258,3 +258,14 @@ class ButtonLayouts:
             [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data=f"job_menu_{job_id}")]
         ]
         return InlineKeyboardMarkup(buttons) 
+    @staticmethod
+    def create_job_menu(job_id: int, status: str, has_photos: bool = False, has_notes: bool = False):
+        buttons = []
+        # ... existing buttons ...
+        
+        # Add note button
+        buttons.append([
+            InlineKeyboardButton("📝 Add Note", callback_data=f"add_note_{job_id}")
+        ])
+        
+        return InlineKeyboardMarkup(buttons)
