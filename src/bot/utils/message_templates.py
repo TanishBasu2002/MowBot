@@ -194,3 +194,19 @@ class MessageTemplates:
             f"📊 Statistics for {period}\n"
             f"{MessageTemplates.SEPARATOR}"
         ) 
+    @staticmethod
+    def format_job_card(site_name: str, status: str, area: Optional[str] = None,
+                       duration: Optional[str] = None, notes: Optional[str] = None,
+                       photo_count: Optional[int] = None) -> str:
+        """Enhanced job card with notes section"""
+        card = [
+            f"📍 {site_name.upper()}",
+            f"🔄 Status: {status.title()}",
+            f"📏 Area: {area}" if area else "",
+            f"⏱ Duration: {duration}" if duration else "",
+            f"📸 Photos: {photo_count}" if photo_count is not None else "",
+            "",
+            "📝 NOTES:",
+            notes if notes else "No notes yet"
+        ]
+        return "\n".join([line for line in card if line])

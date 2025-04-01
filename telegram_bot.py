@@ -47,12 +47,16 @@ from telegram.ext import (
 from telegram.error import BadRequest
 
 # Custom modules – ensure these are working correctly.
+
+from src.bot.utils.user_role import get_user_role
+from src.bot.handlers.job_handler import JobHandler
 from src.bot.utils.message_templates import MessageTemplates
 from src.bot.utils.button_layouts import ButtonLayouts
 from src.bot.database.models import get_db, Ground
 from src.bot.services.ground_service import GroundService
 from src.bot.utils.decorators import error_handler, director_only, employee_required
-
+from datetime import time 
+from src.bot.config.settings import dev_users, director_users, employee_users
 #####################
 # ENV & TOKEN SETUP
 #####################
@@ -75,23 +79,6 @@ async def safe_edit_text(update: Update, text: str, reply_markup: InlineKeyboard
     except Exception as e:
         logger.error(f"Error editing message: {e}")
         await update.effective_message.reply_text(text, reply_markup=reply_markup)
-
-#####################
-# ROLES & USERS
-#####################
-
-dev_users = {1672989849}         # Replace with your dev Telegram user ID.
-director_users = {987654321, 111222333}  # Two director IDs.
-employee_users = {444555666: "Andy", 777888999: "Alex"}  # Two employee IDs.
-
-def get_user_role(user_id: int) -> str:
-    if user_id in dev_users:
-        return "Dev"
-    elif user_id in director_users:
-        return "Director"
-    elif user_id in employee_users:
-        return "Employee"
-    return "Generic"
 
 #####################
 # SITE INFO UPDATES
@@ -154,6 +141,15 @@ cursor.executescript(
         notes TEXT,
         scheduled_date TEXT,
         priority TEXT DEFAULT 'normal'
+    );
+    CREATE TABLE IF NOT EXISTS job_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER,
+    author_id INTEGER,
+    author_role TEXT,
+    note TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(job_id) REFERENCES grounds_data(id)
     );
     """
 )
@@ -261,12 +257,14 @@ async def handle_photo(update: Update, context: CallbackContext):
     if "awaiting_photo_for" not in context.user_data:
         await update.message.reply_text("No photo expected at this time.")
         return
+    
     job_id = context.user_data["awaiting_photo_for"]
     photo_file = await update.message.photo[-1].get_file()
     photo_dir = "photos"
     os.makedirs(photo_dir, exist_ok=True)
     photo_filename = f"job_{job_id}_{photo_file.file_id}.jpg"
     photo_path = os.path.join(photo_dir, photo_filename)
+    
     try:
         photo_bytes = await photo_file.download_as_bytearray()
         stream = io.BytesIO(photo_bytes)
@@ -284,68 +282,44 @@ async def handle_photo(update: Update, context: CallbackContext):
         logger.error(f"Photo processing error: {e}")
         await update.message.reply_text("Photo processing failed.")
         return
+    
     try:
         cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
         result = cursor.fetchone()
         current = result[0] if result else ""
         new_photos = current.strip() + "|" + photo_path if current and current.strip() else photo_path
         current_count = len(current.split("|")) if current and current.strip() else 0
+        
         if current_count >= 25:
             await update.message.reply_text(MessageTemplates.format_error_message("Photo Limit Reached", "Maximum number of photos reached for this job."))
             return
+        
         cursor.execute("UPDATE grounds_data SET photos = ? WHERE id = ?", (new_photos, job_id))
         conn.commit()
-        photo_count = len(new_photos.split("|"))
-        confirmation_text = MessageTemplates.format_success_message("Photo uploaded", f"Photo uploaded for Job {job_id}. ({photo_count}/25 photos uploaded)")
-        keyboard = [
-            [InlineKeyboardButton("📸 View Photos", callback_data=f"view_photos_{job_id}")],
-            [InlineKeyboardButton("📝 Continue Uploading", callback_data=f"upload_photo_{job_id}")]
-        ]
-        markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(confirmation_text, reply_markup=markup)
+        
+        # Only send confirmation if we're not in bulk upload mode
+        if not context.user_data.get("bulk_upload_mode", False):
+            photo_count = len(new_photos.split("|"))
+            confirmation_text = MessageTemplates.format_success_message(
+                "Photo uploaded", 
+                f"Photo uploaded for Job {job_id}. ({photo_count}/25 photos uploaded)"
+            )
+            keyboard = [
+                [InlineKeyboardButton("🖼️ View All Photos", callback_data=f"view_photos_grid_{job_id}")],
+                [InlineKeyboardButton("📸 Add More Photos", callback_data=f"upload_photo_{job_id}")]
+            ]
+            markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(confirmation_text, reply_markup=markup)
+            
     except sqlite3.Error as e:
         logger.error(f"Database error (photo save): {e}")
         await update.message.reply_text(MessageTemplates.format_error_message("Database Error", "Failed to save photo."))
 
-async def handle_text(update: Update, context: CallbackContext):
-    if "awaiting_note_for" in context.user_data:
-        job_id = context.user_data.pop("awaiting_note_for")
-        note = update.message.text
-        try:
-            cursor.execute("SELECT site_name FROM grounds_data WHERE id = ?", (job_id,))
-            result = cursor.fetchone()
-            if not result:
-                await update.message.reply_text(MessageTemplates.format_error_message("Job not found", "The job was not found."))
-                return
-            site_name = result[0]
-            cursor.execute("UPDATE grounds_data SET notes = ? WHERE id = ?", (note, job_id))
-            conn.commit()
-            keyboard = [
-                [InlineKeyboardButton("👀 View Job", callback_data=f"view_job_{job_id}")],
-                [InlineKeyboardButton("📝 Edit Again", callback_data=f"edit_note_{job_id}")]
-            ]
-            markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(MessageTemplates.format_success_message("Note Updated", f"Note updated for {site_name} (Job {job_id})."), reply_markup=markup)
-        except sqlite3.Error as e:
-            logger.error(f"Database error (note update): {e}")
-            await update.message.reply_text(MessageTemplates.format_error_message("Database Error", "Failed to update note."))
-        return
-    if "awaiting_notes" in context.user_data and context.user_data["awaiting_notes"]:
-        notes = update.message.text
-        selected_jobs = context.user_data.get("selected_jobs", set())
-        try:
-            updated_count = 0
-            for job_id in selected_jobs:
-                cursor.execute("UPDATE grounds_data SET notes = ? WHERE id = ?", (notes, job_id))
-                updated_count += 1
-            conn.commit()
-            del context.user_data["awaiting_notes"]
-            await update.message.reply_text(MessageTemplates.format_success_message("Notes Added", f"Notes added to {updated_count} job(s)."))
-            await director_assign_jobs(update, context)
-        except sqlite3.Error as e:
-            logger.error(f"Database error (add notes): {e}")
-            await update.message.reply_text(MessageTemplates.format_error_message("Database Error", "Failed to add notes."))
 
+async def handle_text(update: Update, context: CallbackContext):
+    job_handler = JobHandler()
+    await job_handler.handle_text(update, context)
+        
 async def handle_toggle_job(update: Update, context: CallbackContext):
     data = update.callback_query.data
     job_id = int(data.split("_")[-1])
@@ -362,7 +336,43 @@ async def handle_toggle_job(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"Error toggling job: {e}")
         await update.callback_query.answer("Error toggling job selection.", show_alert=True)
+async def reset_jobs_daily(context: CallbackContext):
+    """Reset job statuses daily at 5 AM UK time"""
+    logger.info("Running daily job reset at 5 AM UK time")
+    try:
+        # Reset completed jobs to pending and clear assignment
+        cursor.execute("""
+            UPDATE grounds_data 
+            SET status = 'pending', 
+                assigned_to = NULL,
+                start_time = NULL,
+                finish_time = NULL
+            WHERE status = 'completed'
+            AND (scheduled_date IS NULL OR scheduled_date = date('now','localtime'))
+        """)
+        conn.commit()
+        logger.info(f"Reset {cursor.rowcount} completed jobs")
+        
+        # If you want to notify someone about the reset
+        # await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text="Daily job reset completed")
+    except Exception as e:
+        logger.error(f"Error resetting jobs: {e}")
 
+def schedule_daily_reset(application):
+    """Schedule the daily reset at 5 AM UK time"""
+    job_queue = application.job_queue
+    
+    # Schedule for 5 AM UK time (04:00 UTC in winter, 05:00 UTC+1 in summer)
+    # Create time object correctly
+    reset_time = time(hour=4, minute=0)  # 4 AM UTC = 5 AM UK time in winter
+    
+    job_queue.run_daily(
+        callback=reset_jobs_daily,
+        time=reset_time,
+        days=(0, 1, 2, 3, 4, 5, 6),
+        name="daily_job_reset"
+    )
+    logger.info("Scheduled daily job reset at 5 AM UK time")
 async def emp_view_jobs(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     cursor.execute(
@@ -484,9 +494,35 @@ async def emp_finish_job(update: Update, context: CallbackContext):
 async def emp_upload_photo(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     context.user_data["awaiting_photo_for"] = job_id
-    keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.DANGER_PREFIX} Cancel", callback_data=f"job_menu_{job_id}")]]
+    context.user_data["bulk_upload_mode"] = True  # Enable bulk upload mode
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ Done Uploading", callback_data=f"finish_upload_{job_id}")],
+        [InlineKeyboardButton(f"{ButtonLayouts.DANGER_PREFIX} Cancel", callback_data=f"job_menu_{job_id}")]
+    ]
     markup = InlineKeyboardMarkup(keyboard)
-    await safe_edit_text(update, "Please send the photo for this job.\n(Manually attach and send a photo.)", reply_markup=markup)
+    await safe_edit_text(update, 
+        "📸 Bulk Photo Upload Mode\n\n"
+        "You can now send multiple photos at once.\n"
+        "Press 'Done Uploading' when finished or 'Cancel' to stop.",
+        reply_markup=markup
+    )
+async def finish_photo_upload(update: Update, context: CallbackContext):
+    job_id = int(update.callback_query.data.split("_")[-1])
+    context.user_data.pop("awaiting_photo_for", None)
+    context.user_data.pop("bulk_upload_mode", None)
+    
+    cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
+    result = cursor.fetchone()
+    if result and result[0]:
+        photo_count = len(result[0].split("|"))
+        await safe_edit_text(update, 
+            MessageTemplates.format_success_message(
+                "Upload Complete",
+                f"Total {photo_count} photos uploaded for this job."
+            )
+        )
+    await emp_job_menu(update, context)
 
 async def emp_site_info(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
@@ -534,19 +570,38 @@ async def director_send_job(update: Update, context: CallbackContext):
     if not row:
         await safe_edit_text(update, MessageTemplates.format_error_message("Job not found", "The requested job was not found."))
         return
+    
     site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area = row
     contact, gate_code = update_site_info(site_name, contact, gate_code)
+    
+    # Fix: Use finish_time instead of undefined finish_dt
     duration = "N/A"
     if start_time and finish_time:
         try:
             duration = str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0]
         except Exception:
             duration = "N/A"
-    sections = [MessageTemplates.format_job_card(site_name=site_name, status="completed" if finish_dt else "in_progress", area=area, duration=duration, notes=notes)]
+    
+    sections = [MessageTemplates.format_job_card(
+        site_name=site_name, 
+        status="completed" if finish_time else "in_progress", 
+        area=area, 
+        duration=duration, 
+        notes=notes
+    )]
+    
     if contact or gate_code:
-        sections.append(MessageTemplates.format_site_info(site_name=site_name, contact=contact, gate_code=gate_code, address=None, special_instructions=None))
+        sections.append(MessageTemplates.format_site_info(
+            site_name=site_name, 
+            contact=contact, 
+            gate_code=gate_code, 
+            address=None, 
+            special_instructions=None
+        ))
+    
     keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]]
     markup = InlineKeyboardMarkup(keyboard)
+    
     if photos:
         photos_list = photos.strip().split("|") if photos and photos.strip() else []
         media_group = []
@@ -559,6 +614,7 @@ async def director_send_job(update: Update, context: CallbackContext):
                     logger.error(f"Error preparing photo for job {job_id}: {e}")
             else:
                 logger.warning(f"Photo file not found: {abs_path}")
+        
         if media_group:
             max_items = 10
             chunks = [media_group[i:i + max_items] for i in range(0, len(media_group), max_items)]
@@ -566,13 +622,20 @@ async def director_send_job(update: Update, context: CallbackContext):
                 if index == 0:
                     if len(chunk) == 1:
                         try:
-                            await update.effective_message.reply_photo(photo=chunk[0].media, caption="\n\n".join(sections), reply_markup=markup)
+                            await update.effective_message.reply_photo(
+                                photo=chunk[0].media, 
+                                caption="\n\n".join(sections), 
+                                reply_markup=markup
+                            )
                         except Exception as e:
                             logger.error(f"Error sending photo: {e}")
                     else:
                         try:
                             await update.effective_message.reply_media_group(media=chunk)
-                            await update.effective_message.reply_text("\n\n".join(sections), reply_markup=markup)
+                            await update.effective_message.reply_text(
+                                "\n\n".join(sections), 
+                                reply_markup=markup
+                            )
                         except Exception as e:
                             logger.error(f"Error sending media group: {e}")
                 else:
@@ -683,25 +746,250 @@ async def director_calendar_view(update: Update, context: CallbackContext):
          [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]
     ])
     await safe_edit_text(update, "Select an employee to view completed jobs:", reply_markup=kb)
+#####################################
+# PHOTO VIEWING FUNCTIONS
+#####################################
 
+async def view_job_photos(update: Update, context: CallbackContext):
+    job_id = int(update.callback_query.data.split("_")[-1])
+    cursor.execute("SELECT photos, site_name FROM grounds_data WHERE id = ?", (job_id,))
+    result = cursor.fetchone()
+    if not result or not result[0]:
+        await safe_edit_text(update, MessageTemplates.format_error_message("No Photos", "No photos available for this job."))
+        return
+
+    photos, site_name = result
+    photo_paths = photos.strip().split("|") if photos and photos.strip() else []
+    if not photo_paths:
+        await safe_edit_text(update, MessageTemplates.format_error_message("No Photos", "No photos available for this job."))
+        return
+
+    # Store photo paths in context for pagination
+    context.user_data["current_photo_index"] = 0
+    context.user_data["job_photos"] = photo_paths
+    context.user_data["job_id"] = job_id
+
+    # Show first photo with navigation
+    await show_single_photo(update, context, photo_paths[0], site_name, 0, len(photo_paths))
+
+async def show_single_photo(update: Update, context: CallbackContext, photo_path: str, site_name: str, index: int, total: int):
+    try:
+        with open(photo_path, 'rb') as photo_file:
+            keyboard = []
+            nav_buttons = []
+            
+            if index > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"photo_nav_{index-1}"))
+            
+            nav_buttons.append(InlineKeyboardButton(f"{index+1}/{total}", callback_data="noop"))
+            
+            if index < total - 1:
+                nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"photo_nav_{index+1}"))
+            
+            keyboard.append(nav_buttons)
+            keyboard.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back to Job", callback_data=f"view_job_{context.user_data['job_id']}")])
+            
+            markup = InlineKeyboardMarkup(keyboard)
+            
+            try:
+                await update.effective_message.reply_photo(
+                    photo=photo_file,
+                    caption=f"📸 {site_name} (Photo {index+1}/{total})",
+                    reply_markup=markup
+                )
+                await update.effective_message.delete()
+            except BadRequest:
+                await update.effective_message.reply_photo(
+                    photo=photo_file,
+                    caption=f"📸 {site_name} (Photo {index+1}/{total})",
+                    reply_markup=markup
+                )
+    except Exception as e:
+        logger.error(f"Error displaying photo: {e}")
+        await safe_edit_text(update, MessageTemplates.format_error_message("Photo Error", "Could not display the photo."))
+
+async def handle_photo_navigation(update: Update, context: CallbackContext):
+    data = update.callback_query.data
+    new_index = int(data.split("_")[-1])
+    photo_paths = context.user_data.get("job_photos", [])
+    
+    if not photo_paths or new_index < 0 or new_index >= len(photo_paths):
+        await update.callback_query.answer("Invalid photo navigation", show_alert=True)
+        return
+    
+    context.user_data["current_photo_index"] = new_index
+    cursor.execute("SELECT site_name FROM grounds_data WHERE id = ?", (context.user_data["job_id"],))
+    site_name = cursor.fetchone()[0]
+    
+    await show_single_photo(update, context, photo_paths[new_index], site_name, new_index, len(photo_paths))
 async def director_view_completed_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
     cursor.execute(
         """
-        SELECT id, site_name, area, status, notes, start_time, finish_time 
+        SELECT id, site_name, area, status, notes, start_time, finish_time, photos, contact, gate_code, map_link
         FROM grounds_data 
-        WHERE assigned_to = ? AND status = 'completed' AND (scheduled_date IS NULL OR DATE(scheduled_date) = DATE('now','localtime'))
-        ORDER BY id
+        WHERE assigned_to = ? AND status = 'completed'
+        ORDER BY finish_time DESC
+        LIMIT 20
         """, (employee_id,)
     )
     jobs = cursor.fetchall()
+    
     if not jobs:
-        await safe_edit_text(update, MessageTemplates.format_success_message("No Completed Jobs", f"No completed jobs for {employee_name} today."))
+        await safe_edit_text(update, MessageTemplates.format_success_message("No Completed Jobs", f"No completed jobs found for {employee_name}."))
         return
-    sections = [MessageTemplates.format_job_list_header(f"{employee_name}'s Completed Jobs", len(jobs))]
-    sections.extend(await format_job_section("Completed", jobs))
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="calendar_view")]])
-    await safe_edit_text(update, "\n\n".join(sections), reply_markup=kb)
 
+    sections = [MessageTemplates.format_job_list_header(f"{employee_name}'s Completed Jobs", len(jobs))]
+    
+    for job in jobs:
+        job_id, site_name, area, status, notes, start_time, finish_time, photos, contact, gate_code, map_link = job
+        
+        # Format duration
+        duration = "N/A"
+        if start_time and finish_time:
+            try:
+                duration = str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time))
+                duration = str(duration).split('.')[0]
+            except Exception:
+                pass
+        
+        # Format photo count
+        photo_count = len(photos.split('|')) if photos else 0
+        
+        # Format job details
+        job_details = MessageTemplates.format_job_card(
+            site_name=site_name,
+            status=status,
+            area=area,
+            duration=duration,
+            notes=notes,
+            photo_count=photo_count
+        )
+        
+        sections.append(job_details)
+    
+    # Create buttons for each job
+    buttons = []
+    for job in jobs:
+        job_id, site_name, _, _, _, _, _, photos, _, _, _ = job
+        photo_count = len(photos.split('|')) if photos else 0
+        button_text = f"{site_name} ({photo_count} 📸)" if photo_count > 0 else site_name
+        buttons.append([InlineKeyboardButton(button_text, callback_data=f"view_job_{job_id}")])
+    
+    buttons.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="calendar_view")])
+    
+    await safe_edit_text(update, "\n\n".join(sections), reply_markup=InlineKeyboardMarkup(buttons))
+async def view_job_photos_grid(update: Update, context: CallbackContext):
+    """View all job photos in a grid format (10 photos per message)"""
+    job_id = int(update.callback_query.data.split('_')[-1])
+    
+    # Get photos from database
+    cursor.execute("SELECT photos, site_name FROM grounds_data WHERE id = ?", (job_id,))
+    result = cursor.fetchone()
+    if not result or not result[0]:
+        await safe_edit_text(update, MessageTemplates.format_error_message("No Photos", "No photos available for this job."))
+        return
+
+    photos, site_name = result
+    photo_paths = photos.strip().split("|") if photos and photos.strip() else []
+    
+    if not photo_paths:
+        await safe_edit_text(update, MessageTemplates.format_error_message("No Photos", "No photos available for this job."))
+        return
+
+    # Store in context for navigation
+    context.user_data["job_photos"] = photo_paths
+    context.user_data["job_id"] = job_id
+    context.user_data["current_page"] = 0
+
+    # Send first grid
+    await send_photo_grid(update, context)
+
+async def send_photo_grid(update: Update, context: CallbackContext):
+    """Send a grid of up to 10 photos with navigation controls"""
+    photo_paths = context.user_data.get("job_photos", [])
+    current_page = context.user_data.get("current_page", 0)
+    job_id = context.user_data.get("job_id")
+    
+    if not photo_paths:
+        return
+
+    # Calculate photo range for current page
+    photos_per_page = 10
+    total_pages = (len(photo_paths) // photos_per_page + (1 if len(photo_paths) % photos_per_page else 0))
+    start_idx = current_page * photos_per_page
+    end_idx = min(start_idx + photos_per_page, len(photo_paths))
+    current_photos = photo_paths[start_idx:end_idx]
+
+    # Prepare media group
+    media_group = []
+    for idx, photo_path in enumerate(current_photos, start=1):
+        try:
+            abs_path = os.path.join(os.getcwd(), photo_path.strip())
+            if os.path.exists(abs_path):
+                caption = f"📸 {idx + start_idx}/{len(photo_paths)}" if idx == 1 else ""
+                media_group.append(InputMediaPhoto(
+                    media=open(abs_path, 'rb'),
+                    caption=caption
+                ))
+        except Exception as e:
+            logger.error(f"Error loading photo {photo_path}: {e}")
+
+    # Create navigation buttons
+    buttons = []
+    nav_buttons = []
+    
+    if current_page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"photo_grid_{current_page-1}"))
+    
+    nav_buttons.append(InlineKeyboardButton(
+        f"Page {current_page+1}/{total_pages}",
+        callback_data="noop"
+    ))
+    
+    if current_page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"photo_grid_{current_page+1}"))
+    
+    buttons.append(nav_buttons)
+    buttons.append([InlineKeyboardButton(
+        f"{ButtonLayouts.BACK_PREFIX} Back to Job",
+        callback_data=f"job_menu_{job_id}"
+    )])
+    
+    markup = InlineKeyboardMarkup(buttons)
+
+    try:
+        if media_group:
+            if len(media_group) == 1:
+                # Send single photo if only one in this group
+                await update.effective_message.reply_photo(
+                    photo=media_group[0].media,
+                    caption=media_group[0].caption,
+                    reply_markup=markup
+                )
+            else:
+                # Send media group for multiple photos
+                await update.effective_message.reply_media_group(media_group)
+                await update.effective_message.reply_text(
+                    f"📸 Photos {start_idx+1}-{end_idx} of {len(photo_paths)}",
+                    reply_markup=markup
+                )
+            await update.effective_message.delete()
+    except Exception as e:
+        logger.error(f"Error sending photo grid: {e}")
+        await safe_edit_text(update, MessageTemplates.format_error_message("Photo Error", "Could not display photos."))
+
+async def handle_photo_grid_navigation(update: Update, context: CallbackContext):
+    """Handle navigation between photo grid pages"""
+    data = update.callback_query.data
+    new_page = int(data.split("_")[-1])
+    photo_paths = context.user_data.get("job_photos", [])
+    
+    if not photo_paths or new_page < 0 or new_page >= (len(photo_paths) // 10 + 1):
+        await update.callback_query.answer("Invalid page navigation", show_alert=True)
+        return
+    
+    context.user_data["current_page"] = new_page
+    await send_photo_grid(update, context)
 async def director_view_employee_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
     cursor.execute(
         """
@@ -752,6 +1040,18 @@ async def dev_employee_dashboard(update: Update, context: CallbackContext):
 async def callback_handler(update: Update, context: CallbackContext):
     data = update.callback_query.data
     await update.callback_query.answer()
+    if data.startswith("view_photos_grid_"):
+        await view_job_photos_grid(update, context)
+    elif data.startswith("photo_grid_"):
+        await handle_photo_grid_navigation(update, context)
+    elif data.startswith("finish_upload_"):
+        await finish_photo_upload(update, context)
+    elif data.startswith("view_photos_grid_"):
+        await view_job_photos_grid(update, context)
+    elif data.startswith("add_note_"):
+        job_id = int(data.split("_")[-1])
+        job_handler = JobHandler()
+        await job_handler.add_note(update, context)
     handlers = {
         "start": start,
         "dev_employee_dashboard": dev_employee_dashboard,
@@ -820,10 +1120,9 @@ async def callback_handler(update: Update, context: CallbackContext):
 #####################################
 
 async def reset_completed_jobs():
-    logger.info("Resetting completed jobs for a new day.")
-    cursor.execute("UPDATE grounds_data SET status = 'pending', assigned_to = NULL, finish_time = NULL WHERE status = 'completed' AND (scheduled_date IS NULL OR scheduled_date = date('now','localtime'))")
-    conn.commit()
-
+    """Legacy reset function - now handled by scheduled job"""
+    logger.info("Running legacy job reset")
+    await reset_jobs_daily(None)  # Call the new function
 #####################################
 # START & HELP COMMANDS
 #####################################
@@ -873,11 +1172,20 @@ def start_profit_thread():
 
 def main() -> None:
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    job_handler = JobHandler()
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, job_handler.handle_text))
     application.add_handler(CallbackQueryHandler(callback_handler))
+    
+    # Schedule daily reset
+    try:
+        schedule_daily_reset(application)
+    except Exception as e:
+        logger.error(f"Failed to schedule daily reset: {e}")
+    
     start_profit_thread()
     application.run_polling()
 

@@ -1,3 +1,4 @@
+Tanish Basu
 # Python
 __pycache__/
 *.py[cod]
@@ -33,6 +34,7 @@ ENV/
 
 # Project specific
 .env
+.venv
 *.db
 photos/
 *.log

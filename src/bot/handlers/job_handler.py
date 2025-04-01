@@ -1,7 +1,9 @@
 from typing import Optional
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from ..utils.note_service import NoteService
+from ..utils.user_role import get_user_role
 from ..utils.message_templates import MessageTemplates
 from ..utils.button_layouts import ButtonLayouts
 from ..database.models import get_db
@@ -183,6 +185,59 @@ class JobHandler(BaseHandler):
 
         await self._send_message(
             update,
-            "\n\n".join(sections),
+            "\n\n".join(sections), 
             reply_markup=InlineKeyboardMarkup(buttons)
-        ) 
+        )
+    async def view_job(self, update: Update, context: ContextTypes.DEFAULT_TYPE, job_id: int):
+        """View job with notes"""
+        db = await self._get_db()
+        ground = await self.ground_service.get_ground(db, job_id)
+        
+        # Get all notes for this job
+        notes = NoteService.get_notes_for_job(db, job_id)
+        
+        # Format job card with notes
+        job_card = MessageTemplates.format_job_card(
+            site_name=ground.site_name,
+            status=ground.status,
+            area=ground.area,
+            duration=ground.duration,
+            notes="\n\n".join([f"{n['author_role']} ({n['created_at']}): {n['note']}" for n in notes]),
+            photo_count=ground.photo_count
+        )
+        
+        # Create buttons including note addition
+        buttons = []
+        buttons.append([InlineKeyboardButton("📝 Add Note", callback_data=f"add_note_{job_id}")])
+        # ... rest of your existing buttons ...
+        
+        markup = InlineKeyboardMarkup(buttons)
+        await self._send_message(update, job_card, reply_markup=markup)
+
+    async def add_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start note addition process"""
+        job_id = int(self.get_callback_data(update).split('_')[-1])
+        context.user_data["awaiting_note_for"] = job_id
+        await self._send_message(update, "Please enter your note for this job:")
+    async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text messages, including notes"""
+        if "awaiting_note_for" in context.user_data:
+            job_id = context.user_data.pop("awaiting_note_for")
+            note_text = update.message.text
+            user_id = self.get_user_id(update)
+            user_role = get_user_role(user_id)
+            
+            db = await self._get_db()
+            NoteService.add_note(db, job_id, user_id, user_role, note_text)
+            
+            await self._send_message(
+                update,
+                MessageTemplates.format_success_message("Note Added", "Your note has been saved."),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Back to Job", callback_data=f"job_menu_{job_id}")]
+                ])
+            )
+            await self.view_job(update, context, job_id)
+        else:
+            # Handle other text messages if needed
+            pass

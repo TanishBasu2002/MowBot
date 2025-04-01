@@ -5,25 +5,15 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from .user_role import get_user_role
+
 from ..config.settings import (
-    DEV_USERS,
-    DIRECTOR_USERS,
-    EMPLOYEE_USERS,
     Roles,
     PHOTOS_DIR
 )
 
 logger = logging.getLogger(__name__)
 
-def get_user_role(user_id: int) -> str:
-    """Get the role of a user based on their ID."""
-    if user_id in DEV_USERS:
-        return Roles.DEV
-    elif user_id in DIRECTOR_USERS:
-        return Roles.DIRECTOR
-    elif user_id in EMPLOYEE_USERS:
-        return Roles.EMPLOYEE
-    return Roles.GENERIC
 
 def get_greeting() -> str:
     """Get a time-appropriate greeting."""
