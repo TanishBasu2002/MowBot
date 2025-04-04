@@ -1,5 +1,10 @@
+# file: /src/bot/utils/message_templates.py
+from asyncio.log import logger
+import logging
 from typing import Optional, List, Dict
 from datetime import datetime
+
+from telegram import Update
 
 class MessageTemplates:
     """Professional message templates for consistent UI."""
@@ -101,15 +106,13 @@ class MessageTemplates:
         )
 
     @staticmethod
-    def format_error_message(error: str, code: Optional[str] = None) -> str:
+    def format_error_message(error: str, details: Optional[str] = None) -> str:
         """Format an enhanced error message."""
-        error_code = f"\nError Code: {code}" if code else ""
+        details_section = f"\n{details}" if details else ""
         return (
             f"⚠️ Error Occurred\n"
             f"{MessageTemplates.SEPARATOR}\n"
-            f"{error}\n"
-            f"{error_code}\n\n"
-            f"If this persists, please contact support."
+            f"{error}{details_section}"
         )
 
     @staticmethod
@@ -210,3 +213,68 @@ class MessageTemplates:
             notes if notes else "No notes yet"
         ]
         return "\n".join([line for line in card if line])
+    @staticmethod
+    def format_note(
+        author: str,
+        timestamp: str,
+        note: str,
+        has_photo: bool = False
+    ) -> str:
+        """Format a single note entry"""
+        photo_indicator = " 📸" if has_photo else ""
+        return (
+            f"👤 {author} at {timestamp}{photo_indicator}:\n"
+            f"{note}\n"
+            f"{MessageTemplates.SEPARATOR}"
+        )
+    
+    @staticmethod
+    def format_notes_list(notes: List[Dict]) -> str:
+        """Format multiple notes"""
+        if not notes:
+            return "No notes yet for this job."
+            
+        header = "📝 JOB NOTES:\n" + MessageTemplates.SEPARATOR
+        return header + "\n".join(
+            MessageTemplates.format_note(
+                note['author'],
+                note['created_at'],
+                note['note'],
+                note['has_photo']
+            ) for note in notes
+        )
+    logger = logging.getLogger(__name__)
+
+    async def safe_edit_text(update: Update, text: str, reply_markup=None, parse_mode=None):
+        """Safely edit message text with fallback to new message"""
+        try:
+            if update.callback_query:
+                await update.callback_query.edit_message_text(
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+            else:
+                await update.effective_message.reply_text(
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                return  # Silent handling for no-change edits
+            logger.warning(f"Message edit failed: {e}")
+            try:
+                await update.effective_message.reply_text(
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+            except Exception as fallback_error:
+                logger.error(f"Fallback failed: {fallback_error}")
+        except Exception as e:
+            logger.error(f"Unexpected edit error: {e}")
+            await update.effective_message.reply_text(
+                "⚠️ Please try that action again",
+                reply_markup=reply_markup
+            )
