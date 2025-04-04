@@ -73,9 +73,21 @@ class JobNote(Base):
     id = Column(Integer, primary_key=True)
     job_id = Column(Integer, ForeignKey('grounds_data.id'))
     author_id = Column(Integer)
+    author_name = Column(String)  # Store name for easy display
     author_role = Column(String)
     note = Column(String)
     created_at = Column(DateTime, default=datetime.now)
+    photo_path = Column(String, nullable=True)  # Optional photo reference
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'job_id': self.job_id,
+            'author': f"{self.author_name} ({self.author_role})",
+            'note': self.note,
+            'created_at': self.created_at.strftime("%Y-%m-%d %H:%M"),
+            'has_photo': bool(self.photo_path)
+        }
 # Database initialization
 engine = create_engine(f'sqlite:///{DATABASE_PATH}')
 SessionLocal = sessionmaker(bind=engine)

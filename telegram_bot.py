@@ -318,6 +318,8 @@ async def handle_photo(update: Update, context: CallbackContext):
 
 async def handle_text(update: Update, context: CallbackContext):
     job_handler = JobHandler()
+    if "awaiting_note_for" in context.user_data:
+        await job_handler.handle_job_note(update, context)
     await job_handler.handle_text(update, context)
         
 async def handle_toggle_job(update: Update, context: CallbackContext):
@@ -417,16 +419,21 @@ async def emp_employee_dashboard(update: Update, context: CallbackContext):
 async def emp_job_menu(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
-        """
-        SELECT site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos 
-        FROM grounds_data 
-        WHERE id = ?
-        """, (job_id,)
+        "SELECT site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos "
+        "FROM grounds_data WHERE id = ?", 
+        (job_id,)
     )
     job_data = cursor.fetchone()
+    
     if not job_data:
-        await safe_edit_text(update, MessageTemplates.format_error_message("Job not found", "The requested job was not found.", "JOB_404"))
+        # Updated error message formatting
+        error_msg = MessageTemplates.format_error_message(
+            "Job not found",
+            "The requested job was not found."
+        )
+        await safe_edit_text(update, error_msg)
         return
+    
     site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos = job_data
     sections = [MessageTemplates.format_job_card(site_name=site_name, status=status, area=area,
                 duration=(str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0] if start_time and finish_time else "N/A"),
@@ -439,7 +446,8 @@ async def emp_job_menu(update: Update, context: CallbackContext):
         keyboard.append([InlineKeyboardButton("▶️ Start Job", callback_data=f"start_job_{job_id}")])
     elif status == 'in_progress':
         keyboard.append([InlineKeyboardButton("✅ Finish Job", callback_data=f"finish_job_{job_id}")])
-    keyboard.append([InlineKeyboardButton("📸 Upload Photo", callback_data=f"upload_photo_{job_id}")])
+        keyboard.append([InlineKeyboardButton("📝 Add Note", callback_data=f"add_note_{job_id}")])  
+        keyboard.append([InlineKeyboardButton("📸 Upload Photo", callback_data=f"upload_photo_{job_id}")])
     if contact or gate_code:
         keyboard.append([InlineKeyboardButton("ℹ️ Site Info", callback_data=f"site_info_{job_id}")])
     if map_link:
@@ -1011,10 +1019,10 @@ async def director_view_employee_jobs(update: Update, context: CallbackContext, 
 
 async def director_view_andys_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 1672989849, "Andy")
-
 async def director_view_alexs_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 777888999, "Alex")
-
+async def director_view_tans_jobs(update: Update, context: CallbackContext):
+    await director_view_employee_jobs(update, context, 972438138, "Tan")
 #####################################
 # DEV FUNCTIONS
 #####################################
@@ -1040,80 +1048,105 @@ async def dev_employee_dashboard(update: Update, context: CallbackContext):
 async def callback_handler(update: Update, context: CallbackContext):
     data = update.callback_query.data
     await update.callback_query.answer()
-    if data.startswith("view_photos_grid_"):
-        await view_job_photos_grid(update, context)
-    elif data.startswith("photo_grid_"):
-        await handle_photo_grid_navigation(update, context)
-    elif data.startswith("finish_upload_"):
-        await finish_photo_upload(update, context)
-    elif data.startswith("view_photos_grid_"):
-        await view_job_photos_grid(update, context)
-    elif data.startswith("add_note_"):
-        job_id = int(data.split("_")[-1])
+    try:
         job_handler = JobHandler()
-        await job_handler.add_note(update, context)
-    handlers = {
-        "start": start,
-        "dev_employee_dashboard": dev_employee_dashboard,
-        "dev_director_dashboard": dev_director_dashboard,
-        "view_andys_jobs": director_view_andys_jobs,
-        "view_alexs_jobs": director_view_alexs_jobs,
-        "calendar_view": director_calendar_view,
-        "director_dashboard": director_dashboard,
-        "emp_view_jobs": emp_view_jobs,
-        "emp_employee_dashboard": emp_employee_dashboard,
-        "add_notes": director_add_notes,
-        "dir_assign_jobs": director_assign_jobs,
-        "assign_selected_jobs": director_assign_jobs
-    }
-    if data in handlers:
-        await handlers[data](update, context)
-        return
-    if data.startswith("dir_assign_jobs_list"):
-        await director_assign_jobs_list(update, context)
-    elif data.startswith("select_day_"):
-        await director_select_day_for_assignment(update, context)
-    elif data.startswith("assign_day_"):
-        await director_assign_day_selected(update, context)
-    elif data.startswith("toggle_job_"):
-        await handle_toggle_job(update, context)
-    elif data.startswith("assign_to_"):
-        await assign_jobs_to_employee(update, context)
-    elif data.startswith("view_completed_jobs_"):
-        emp_id = int(data.split("_")[-1])
-        emp_name = employee_users.get(emp_id, "Employee")
-        await director_view_completed_jobs(update, context, emp_id, emp_name)
-    elif data.startswith("job_menu_"):
-        await emp_job_menu(update, context)
-    elif data.startswith("upload_photo_"):
-        await emp_upload_photo(update, context)
-    elif data.startswith("site_info_"):
-        await emp_site_info(update, context)
-    elif data.startswith("start_job_"):
-        await emp_start_job(update, context)
-    elif data.startswith("finish_job_"):
-        await emp_finish_job(update, context)
-    elif data.startswith("map_link_"):
-        await emp_map_link(update, context)
-    elif data.startswith("send_job_"):
-        await director_send_job(update, context)
-    elif data.startswith("edit_note_"):
-        await director_edit_note(update, context)
-    elif data.startswith("cancel_note_"):
-        await director_cancel_note(update, context)
-    elif data.startswith("view_job_"):
-        await director_send_job(update, context)
-    elif data.startswith("view_photos_"):
-        await view_job_photos(update, context)
-    elif data.startswith("page_"):
-        page = int(data.split("_")[-1])
-        context.user_data["current_page"] = page
-        text, markup = await build_director_assign_jobs_page(page, context)
-        await safe_edit_text(update, text, reply_markup=markup)
-    elif data == "noop":
-        pass
-    else:
-        await safe_edit_text(update, MessageTemplates.format_error_message("Unknown Action", "This action is not supported."))
+        handlers = {
+            "start": start,
+            "dev_employee_dashboard": dev_employee_dashboard,
+            "dev_director_dashboard": dev_director_dashboard,
+            "view_andys_jobs": director_view_andys_jobs,
+            "view_alexs_jobs": director_view_alexs_jobs,
+            "view_tans_jobs": director_view_tans_jobs,
+            "calendar_view": director_calendar_view,
+            "director_dashboard": director_dashboard,
+            "emp_view_jobs": emp_view_jobs,
+            "emp_employee_dashboard": emp_employee_dashboard,
+            "add_notes": director_add_notes,
+            "dir_assign_jobs": director_assign_jobs,
+            "assign_selected_jobs": director_assign_jobs
+        }
+        if data in handlers:
+            await handlers[data](update, context)
+            return
+        if data.startswith("dir_assign_jobs_list"):
+            await director_assign_jobs_list(update, context)
+        elif data.startswith("add_note_"):
+            await job_handler.prepare_add_note(update, context)
+        elif data.startswith("view_notes_"):
+            job_id = int(data.split('_')[-1])
+            await job_handler.view_job_with_notes(update, context, job_id)
+        elif data.startswith("view_photos_grid_"):
+            await view_job_photos_grid(update, context)
+        elif data.startswith("photo_grid_"):
+            await handle_photo_grid_navigation(update, context)
+        elif data.startswith("finish_upload_"):
+            await finish_photo_upload(update, context)
+        elif data.startswith("view_photos_grid_"):
+            await view_job_photos_grid(update, context)
+        elif data.startswith("add_note_"):
+            job_id = int(data.split("_")[-1])
+            await job_handler.add_note(update, context)
+        elif data.startswith("view_notes_"):
+            job_id = int(data.split('_')[-1])
+            await job_handler.view_job_with_notes(update, context, job_id)
+        elif data.startswith("add_note_"):
+            await job_handler.prepare_add_note(update, context)
+        elif data.startswith("add_photo_note_"):
+            await job_handler.prepare_add_photo_note(update, context)
+        elif data.startswith("add_note_"):
+            await job_handler.add_note_to_job(update, context)
+        elif data.startswith("start_job_with_notes_"):
+            await job_handler.start_job_with_notes(update, context)
+        elif data.startswith("add_work_note_"):
+            await job_handler.add_work_note(update, context)
+        elif data.startswith("job_working_"):
+            await job_handler.job_working_view(update, context)
+        elif data.startswith("select_day_"):
+            await director_select_day_for_assignment(update, context)
+        elif data.startswith("assign_day_"):
+            await director_assign_day_selected(update, context)
+        elif data.startswith("toggle_job_"):
+            await handle_toggle_job(update, context)
+        elif data.startswith("assign_to_"):
+            await assign_jobs_to_employee(update, context)
+        elif data.startswith("view_completed_jobs_"):
+            emp_id = int(data.split("_")[-1])
+            emp_name = employee_users.get(emp_id, "Employee")
+            await director_view_completed_jobs(update, context, emp_id, emp_name)
+        elif data.startswith("job_menu_"):
+            await emp_job_menu(update, context)
+        elif data.startswith("upload_photo_"):
+            await emp_upload_photo(update, context)
+        elif data.startswith("site_info_"):
+            await emp_site_info(update, context)
+        elif data.startswith("start_job_"):
+            await emp_start_job(update, context)
+        elif data.startswith("finish_job_"):
+            await emp_finish_job(update, context)
+        elif data.startswith("map_link_"):
+            await emp_map_link(update, context)
+        elif data.startswith("send_job_"):
+            await director_send_job(update, context)
+        elif data.startswith("edit_note_"):
+            await director_edit_note(update, context)
+        elif data.startswith("cancel_note_"):
+            await director_cancel_note(update, context)
+        elif data.startswith("view_job_"):
+            await director_send_job(update, context)
+        elif data.startswith("view_photos_"):
+            await view_job_photos(update, context)
+        elif data.startswith("page_"):
+            page = int(data.split("_")[-1])
+            context.user_data["current_page"] = page
+            text, markup = await build_director_assign_jobs_page(page, context)
+            await safe_edit_text(update, text, reply_markup=markup)
+        elif data == "noop":
+            pass
+        else:
+            await safe_edit_text(update, MessageTemplates.format_error_message("Unknown Action", "This action is not supported."))
+    except Exception as e:
+        logger.error(f"Error in callback handler: {e}")
+        await safe_edit_text(update, "⚠️ An error occurred. Please try again.")
 
 #####################################
 # DAILY RESET FUNCTION

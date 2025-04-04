@@ -1,3 +1,4 @@
+# file: /src/bot/utils/user_role.py
 from ..config.settings import dev_users, director_users, employee_users
 
 def get_user_role(user_id: int) -> str:

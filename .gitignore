@@ -38,7 +38,8 @@ ENV/
 *.db
 photos/
 *.log
-
+*.db-shm
+*.db-wal
 # OS specific
 .DS_Store
 Thumbs.db

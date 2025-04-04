@@ -3,7 +3,7 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from sqlalchemy.orm import Session
 
-from ..utils.helpers import safe_edit_text, build_menu
+from ..utils.helpers import Helpers
 from ..database.models import get_db
 from ..services.ground_service import GroundService
 
@@ -26,7 +26,7 @@ class BaseHandler:
     ) -> Any:
         """Send a message, handling both new messages and callback queries."""
         if update.callback_query:
-            return await safe_edit_text(
+            return await Helpers.safe_edit_text(
                 update.callback_query.message,
                 text,
                 reply_markup=reply_markup,
@@ -58,7 +58,7 @@ class BaseHandler:
         footer = [create_button(b) for b in (footer_buttons or [])]
 
         return InlineKeyboardMarkup(
-            build_menu(keyboard_buttons, n_cols, header, footer)
+            Helpers.build_menu(keyboard_buttons, n_cols, header, footer)
         )
 
     async def handle_error(

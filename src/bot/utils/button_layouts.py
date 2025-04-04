@@ -83,7 +83,8 @@ class ButtonLayouts:
             # Employee Overview Section
             [
                 InlineKeyboardButton("👤 Andy's Jobs", callback_data="view_andys_jobs"),
-                InlineKeyboardButton("👤 Alex's Jobs", callback_data="view_alexs_jobs")
+                InlineKeyboardButton("👤 Alex's Jobs", callback_data="view_alexs_jobs"),
+                InlineKeyboardButton("👤 Tan's Jobs", callback_data="view_tans_jobs")
             ],
             
             # Planning Section
@@ -259,13 +260,32 @@ class ButtonLayouts:
         ]
         return InlineKeyboardMarkup(buttons) 
     @staticmethod
-    def create_job_menu(job_id: int, status: str, has_photos: bool = False, has_notes: bool = False):
+    def create_job_menu(job_id: int, status: str, has_notes: bool = False):
         buttons = []
-        # ... existing buttons ...
         
-        # Add note button
+        if status == 'pending':
+            buttons.append([
+                InlineKeyboardButton("▶️ Start Job", callback_data=f"start_job_{job_id}")
+            ])
+        elif status == 'in_progress':
+            buttons.append([
+                InlineKeyboardButton("✅ Finish Job", callback_data=f"finish_job_{job_id}"),
+                InlineKeyboardButton("📝 Add Note", callback_data=f"add_note_{job_id}"),
+            ])
+        
+        # Common buttons
         buttons.append([
-            InlineKeyboardButton("📝 Add Note", callback_data=f"add_note_{job_id}")
+            InlineKeyboardButton("📸 Upload Photo", callback_data=f"upload_photo_{job_id}"),
+            InlineKeyboardButton("ℹ️ Site Info", callback_data=f"site_info_{job_id}")
+        ])
+        
+        if has_notes:
+            buttons.append([
+                InlineKeyboardButton("🗒️ View Notes", callback_data=f"view_notes_{job_id}")
+            ])
+        
+        buttons.append([
+            InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="emp_view_jobs")
         ])
         
         return InlineKeyboardMarkup(buttons)
