@@ -1021,8 +1021,10 @@ async def director_view_andys_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 1672989849, "Andy")
 async def director_view_alexs_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 777888999, "Alex")
+"""
 async def director_view_tans_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 972438138, "Tan")
+"""
 #####################################
 # DEV FUNCTIONS
 #####################################
@@ -1056,7 +1058,7 @@ async def callback_handler(update: Update, context: CallbackContext):
             "dev_director_dashboard": dev_director_dashboard,
             "view_andys_jobs": director_view_andys_jobs,
             "view_alexs_jobs": director_view_alexs_jobs,
-            "view_tans_jobs": director_view_tans_jobs,
+           #"view_tans_jobs": director_view_tans_jobs,
             "calendar_view": director_calendar_view,
             "director_dashboard": director_dashboard,
             "emp_view_jobs": emp_view_jobs,
