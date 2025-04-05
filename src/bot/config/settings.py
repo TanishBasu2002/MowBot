@@ -31,7 +31,7 @@ DATABASE_PATH = BASE_DIR / "bot_data.db"
 PHOTOS_DIR = BASE_DIR / "photos"
 
 # Job Configuration
-MAX_PHOTOS_PER_JOB = 25
+MAX_PHOTOS_PER_JOB = 50
 PHOTOS_CHUNK_SIZE = 10
 
 # Scheduler Configuration
