@@ -47,7 +47,7 @@ from telegram.ext import (
 from telegram.error import BadRequest
 
 # Custom modules – ensure these are working correctly.
-
+from weather_integration import get_weather_forecast, format_weather_message
 from src.bot.utils.user_role import get_user_role
 from src.bot.handlers.job_handler import JobHandler
 from src.bot.utils.message_templates import MessageTemplates
@@ -426,7 +426,7 @@ async def emp_employee_dashboard(update: Update, context: CallbackContext):
 async def emp_job_menu(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
-        "SELECT site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos "
+        "SELECT site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos, address "
         "FROM grounds_data WHERE id = ?", 
         (job_id,)
     )
@@ -441,7 +441,7 @@ async def emp_job_menu(update: Update, context: CallbackContext):
         await safe_edit_text(update, error_msg)
         return
     
-    site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos = job_data
+    site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos, address = job_data
     
     # FIXED: Ensure notes are properly passed to format_job_card
     sections = [MessageTemplates.format_job_card(
@@ -453,9 +453,17 @@ async def emp_job_menu(update: Update, context: CallbackContext):
         notes=notes
     )]
     
+    # Add weather forecast for outdoor jobs
+    if area and any(outdoor_term in area.lower() for outdoor_term in ["garden", "outdoor", "yard", "field", "grounds", "exterior"]):
+        # Use address if available, otherwise use site name + UK
+        location = address if address else f"{site_name},UK"
+        weather_data = await get_weather_forecast(location)
+        if weather_data:
+            sections.append(format_weather_message(weather_data, site_name))
+    
     if contact or gate_code:
         contact, gate_code = update_site_info(site_name, contact, gate_code)
-        sections.append(MessageTemplates.format_site_info(site_name=site_name, contact=contact, gate_code=gate_code, address=None, special_instructions=None))
+        sections.append(MessageTemplates.format_site_info(site_name=site_name, contact=contact, gate_code=gate_code, address=address, special_instructions=None))
     keyboard = []
     if status == 'pending':
         keyboard.append([InlineKeyboardButton("▶️ Start Job", callback_data=f"start_job_{job_id}")])
@@ -467,6 +475,11 @@ async def emp_job_menu(update: Update, context: CallbackContext):
         keyboard.append([InlineKeyboardButton("ℹ️ Site Info", callback_data=f"site_info_{job_id}")])
     if map_link:
         keyboard.append([InlineKeyboardButton("🗺 Map Link", callback_data=f"map_link_{job_id}")])
+    
+    # Add weather refresh button for outdoor jobs
+    if area and any(outdoor_term in area.lower() for outdoor_term in ["garden", "outdoor", "yard", "field", "grounds", "exterior"]):
+        keyboard.append([InlineKeyboardButton("🌤️ Refresh Weather", callback_data=f"refresh_weather_{job_id}")])
+    
     keyboard.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="emp_view_jobs")])
     markup = InlineKeyboardMarkup(keyboard)
     await safe_edit_text(update, "\n\n".join(sections), reply_markup=markup)
@@ -585,7 +598,7 @@ async def director_send_job(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
         """
-        SELECT site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area 
+        SELECT site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area, address 
         FROM grounds_data 
         WHERE id = ?
         """, (job_id,)
@@ -595,7 +608,7 @@ async def director_send_job(update: Update, context: CallbackContext):
         await safe_edit_text(update, MessageTemplates.format_error_message("Job not found", "The requested job was not found."))
         return
     
-    site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area = row
+    site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area, address = row
     contact, gate_code = update_site_info(site_name, contact, gate_code)
     
     duration = "N/A"
@@ -614,16 +627,30 @@ async def director_send_job(update: Update, context: CallbackContext):
         notes=notes
     )]
     
+    # Add weather forecast for outdoor jobs
+    if area and any(outdoor_term in area.lower() for outdoor_term in ["garden", "outdoor", "yard", "field", "grounds", "exterior"]):
+        # Use address if available, otherwise use site name + UK
+        location = address if address else f"{site_name},UK"
+        weather_data = await get_weather_forecast(location)
+        if weather_data:
+            sections.append(format_weather_message(weather_data, site_name))
+    
     if contact or gate_code:
         sections.append(MessageTemplates.format_site_info(
             site_name=site_name, 
             contact=contact, 
             gate_code=gate_code, 
-            address=None, 
+            address=address, 
             special_instructions=None
         ))
     
-    keyboard = [[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]]
+    keyboard = []
+    
+    # Add weather refresh button for outdoor jobs
+    if area and any(outdoor_term in area.lower() for outdoor_term in ["garden", "outdoor", "yard", "field", "grounds", "exterior"]):
+        keyboard.append([InlineKeyboardButton("🌤️ Refresh Weather", callback_data=f"refresh_weather_{job_id}")])
+    
+    keyboard.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")])
     markup = InlineKeyboardMarkup(keyboard)
     
     if photos:
@@ -1049,6 +1076,41 @@ async def director_view_tans_jobs(update: Update, context: CallbackContext):
 """
 
 #####################################
+# WEATHER FUNCTIONS
+#####################################
+
+async def refresh_weather(update: Update, context: CallbackContext):
+    job_id = int(update.callback_query.data.split("_")[-1])
+    cursor.execute(
+        "SELECT site_name, area, address FROM grounds_data WHERE id = ?", 
+        (job_id,)
+    )
+    job_data = cursor.fetchone()
+    
+    if not job_data:
+        await update.callback_query.answer("Job not found", show_alert=True)
+        return
+    
+    site_name, area, address = job_data
+    
+    # Use address if available, otherwise use site name + UK
+    location = address if address else f"{site_name},UK"
+    
+    # Clear cache to force refresh
+    from weather_integration import weather_cache
+    cache_key = f"{location}_1"
+    if cache_key in weather_cache:
+        del weather_cache[cache_key]
+    
+    await update.callback_query.answer("Refreshing weather data...", show_alert=False)
+    
+    # Redirect back to job menu to show updated weather
+    if update.effective_user.id in director_users:
+        await director_send_job(update, context)
+    else:
+        await emp_job_menu(update, context)
+
+#####################################
 # DEV FUNCTIONS
 #####################################
 
@@ -1093,6 +1155,12 @@ async def callback_handler(update: Update, context: CallbackContext):
         if data in handlers:
             await handlers[data](update, context)
             return
+            
+        # Add refresh_weather handler
+        if data.startswith("refresh_weather_"):
+            await refresh_weather(update, context)
+            return
+            
         if data.startswith("dir_assign_jobs_list"):
             await director_assign_jobs_list(update, context)
         elif data.startswith("add_note_"):
@@ -1230,6 +1298,11 @@ def start_profit_thread():
     profit_thread.start()
 
 def main() -> None:
+    # Check for weather API key
+    if not os.getenv("WEATHER_API_KEY"):
+        logger.warning("WEATHER_API_KEY environment variable not set. Weather forecasts will be unavailable.")
+        logger.info("Get a free API key from https://openweathermap.org/ and set it as WEATHER_API_KEY")
+    
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     job_handler = JobHandler()
     # Add handlers
