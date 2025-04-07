@@ -1235,8 +1235,6 @@ def main() -> None:
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    # Remove or correct the invalid handler
-    # application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, help_command))
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, job_handler.handle_text))
     application.add_handler(CallbackQueryHandler(callback_handler))
