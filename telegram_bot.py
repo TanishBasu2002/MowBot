@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 ######################################################
-# TELEGRAM_BOT.PY (ULTIMATE VERSION V8 - ENHANCED MowBot MVP)
+# TELEGRAM_BOT.PY (ULTIMATE VERSION V9 - ENHANCED MowBot MVP)
 #
 # Features:
 # - Dev Dashboard: Dedicated view for the developer with buttons
@@ -10,7 +10,7 @@
 #       for selection (toggling by job ID so that a green check appears), then an "Assign Selected"
 #       button to assign them to either Andy or Alex.
 #     • "View Completed Jobs" – shows a submenu with "Andy" and "Alex" buttons;
-#       choosing one displays that employee’s completed jobs as buttons. Tapping a job button
+#       choosing one displays that employee's completed jobs as buttons. Tapping a job button
 #       shows its details (including photos) with back buttons.
 # - Employee Dashboard: Shows assigned (but not completed) jobs with inline buttons for
 #   starting/finishing jobs, viewing site info, map link, and uploading photos.
@@ -230,14 +230,19 @@ async def build_director_assign_jobs_page(page: int, context: CallbackContext) -
             InlineKeyboardMarkup([[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]])
         )
     selected_jobs = context.user_data.get("selected_jobs", set())
+    
+    # FIXED: Only show header and instructions, not the redundant job list
     text_parts = [MessageTemplates.format_job_list_header("Available Jobs", len(jobs))]
-    for job_id, site_name, area, status in jobs:
-        is_selected = job_id in selected_jobs
-        text_parts.append(f"{'✅' if is_selected else '⬜️'} {MessageTemplates.STATUS_EMOJIS.get(status.lower(), '❓')} {site_name} ({area or 'No Area'})")
+    text_parts.append("Select jobs to assign by tapping the buttons below:")
+    
     keyboard = []
     for job_id, site_name, area, status in jobs:
         is_selected = job_id in selected_jobs
-        keyboard.append([InlineKeyboardButton(f"{'✅' if is_selected else '⬜️'} {site_name}", callback_data=f"toggle_job_{job_id}")])
+        keyboard.append([InlineKeyboardButton(
+            f"{'✅' if is_selected else '⬜️'} {site_name} ({area or 'No Area'})", 
+            callback_data=f"toggle_job_{job_id}"
+        )])
+    
     nav_buttons = []
     if page > 1:
         nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"page_{page-1}"))
@@ -338,22 +343,23 @@ async def handle_toggle_job(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"Error toggling job: {e}")
         await update.callback_query.answer("Error toggling job selection.", show_alert=True)
+
 async def reset_jobs_daily(context: CallbackContext):
     """Reset job statuses daily at 5 AM UK time"""
     logger.info("Running daily job reset at 5 AM UK time")
     try:
-        # Reset completed jobs to pending and clear assignment
+        # FIXED: Reset both completed and in-progress jobs
         cursor.execute("""
             UPDATE grounds_data 
             SET status = 'pending', 
                 assigned_to = NULL,
                 start_time = NULL,
                 finish_time = NULL
-            WHERE status = 'completed'
+            WHERE status IN ('completed', 'in_progress')
             AND (scheduled_date IS NULL OR scheduled_date = date('now','localtime'))
         """)
         conn.commit()
-        logger.info(f"Reset {cursor.rowcount} completed jobs")
+        logger.info(f"Reset {cursor.rowcount} jobs")
         
         # If you want to notify someone about the reset
         # await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text="Daily job reset completed")
@@ -375,6 +381,7 @@ def schedule_daily_reset(application):
         name="daily_job_reset"
     )
     logger.info("Scheduled daily job reset at 5 AM UK time")
+
 async def emp_view_jobs(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     cursor.execute(
@@ -435,9 +442,17 @@ async def emp_job_menu(update: Update, context: CallbackContext):
         return
     
     site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos = job_data
-    sections = [MessageTemplates.format_job_card(site_name=site_name, status=status, area=area,
-                duration=(str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0] if start_time and finish_time else "N/A"),
-                notes=notes)]
+    
+    # FIXED: Ensure notes are properly passed to format_job_card
+    sections = [MessageTemplates.format_job_card(
+        site_name=site_name, 
+        status=status, 
+        area=area,
+        duration=(str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0] 
+                 if start_time and finish_time else "N/A"),
+        notes=notes
+    )]
+    
     if contact or gate_code:
         contact, gate_code = update_site_info(site_name, contact, gate_code)
         sections.append(MessageTemplates.format_site_info(site_name=site_name, contact=contact, gate_code=gate_code, address=None, special_instructions=None))
@@ -515,6 +530,7 @@ async def emp_upload_photo(update: Update, context: CallbackContext):
         "Press 'Done Uploading' when finished or 'Cancel' to stop.",
         reply_markup=markup
     )
+
 async def finish_photo_upload(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     context.user_data.pop("awaiting_photo_for", None)
@@ -582,7 +598,6 @@ async def director_send_job(update: Update, context: CallbackContext):
     site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area = row
     contact, gate_code = update_site_info(site_name, contact, gate_code)
     
-    # Fix: Use finish_time instead of undefined finish_dt
     duration = "N/A"
     if start_time and finish_time:
         try:
@@ -590,6 +605,7 @@ async def director_send_job(update: Update, context: CallbackContext):
         except Exception:
             duration = "N/A"
     
+    # FIXED: Ensure notes are properly passed to format_job_card
     sections = [MessageTemplates.format_job_card(
         site_name=site_name, 
         status="completed" if finish_time else "in_progress", 
@@ -754,6 +770,7 @@ async def director_calendar_view(update: Update, context: CallbackContext):
          [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]
     ])
     await safe_edit_text(update, "Select an employee to view completed jobs:", reply_markup=kb)
+
 #####################################
 # PHOTO VIEWING FUNCTIONS
 #####################################
@@ -830,6 +847,7 @@ async def handle_photo_navigation(update: Update, context: CallbackContext):
     site_name = cursor.fetchone()[0]
     
     await show_single_photo(update, context, photo_paths[new_index], site_name, new_index, len(photo_paths))
+
 async def director_view_completed_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
     cursor.execute(
         """
@@ -886,6 +904,7 @@ async def director_view_completed_jobs(update: Update, context: CallbackContext,
     buttons.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="calendar_view")])
     
     await safe_edit_text(update, "\n\n".join(sections), reply_markup=InlineKeyboardMarkup(buttons))
+
 async def view_job_photos_grid(update: Update, context: CallbackContext):
     """View all job photos in a grid format (10 photos per message)"""
     job_id = int(update.callback_query.data.split('_')[-1])
@@ -998,6 +1017,7 @@ async def handle_photo_grid_navigation(update: Update, context: CallbackContext)
     
     context.user_data["current_page"] = new_page
     await send_photo_grid(update, context)
+
 async def director_view_employee_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
     cursor.execute(
         """
@@ -1019,12 +1039,15 @@ async def director_view_employee_jobs(update: Update, context: CallbackContext, 
 
 async def director_view_andys_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 1672989849, "Andy")
+
 async def director_view_alexs_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 777888999, "Alex")
+
 """
 async def director_view_tans_jobs(update: Update, context: CallbackContext):
     await director_view_employee_jobs(update, context, 972438138, "Tan")
 """
+
 #####################################
 # DEV FUNCTIONS
 #####################################
@@ -1158,6 +1181,7 @@ async def reset_completed_jobs():
     """Legacy reset function - now handled by scheduled job"""
     logger.info("Running legacy job reset")
     await reset_jobs_daily(None)  # Call the new function
+
 #####################################
 # START & HELP COMMANDS
 #####################################
@@ -1211,6 +1235,7 @@ def main() -> None:
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.  help_command))
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, job_handler.handle_text))
     application.add_handler(CallbackQueryHandler(callback_handler))
@@ -1226,3 +1251,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
