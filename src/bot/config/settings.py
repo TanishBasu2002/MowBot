@@ -24,7 +24,10 @@ class Roles:
 # User IDs Configuration
 dev_users = {1672989849}         # Replace with your dev Telegram user ID.
 director_users = {8018680694, 7996550019}  # Two director IDs.
-employee_users = {1672989849: "Andy", 777888999, 7747082939, 6396234665: "Alex"}  # Two employee IDs.
+employee_users = {1672989849: "Andy", 
+                  7747082939: "Alex", # Main Alex
+                  6396234665: "Alex", # Second user ID for Alex
+                 } 
 
 # Database Configuration
 DATABASE_PATH = BASE_DIR / "bot_data.db"
