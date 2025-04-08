@@ -1,3 +1,13 @@
+I'll create a complete solution for you with minimal changes to implement date-based photo filtering. Here's the approach I'm taking:
+
+1. Add a helper function to filter photos by date
+2. Modify photo upload to include date in filename
+3. Update photo viewing to only show photos from the relevant date
+
+
+Here's the complete code for your telegram_bot.py file:
+
+```python
 #!/usr/bin/env python
 ######################################################
 # TELEGRAM_BOT.PY (ULTIMATE VERSION V11 - ENHANCED MowBot MVP)
@@ -23,7 +33,7 @@
 import os
 import logging
 import sqlite3
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 import asyncio
 from PIL import Image
 import io
@@ -31,18 +41,18 @@ import time as time_module  # Renamed to avoid conflict with datetime.time
 import threading
 
 from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputMediaPhoto
+Update,
+InlineKeyboardButton,
+InlineKeyboardMarkup,
+InputMediaPhoto
 )
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    CallbackContext,
-    MessageHandler,
-    filters
+ApplicationBuilder,
+CommandHandler,
+CallbackQueryHandler,
+CallbackContext,
+MessageHandler,
+filters
 )
 from telegram.error import BadRequest
 
@@ -55,6 +65,7 @@ from src.bot.utils.button_layouts import ButtonLayouts
 from src.bot.database.models import get_db, Ground
 from src.bot.services.ground_service import GroundService
 from src.bot.utils.decorators import error_handler, director_only, employee_required
+from datetime import time  # This is for the scheduler, keep it separate from time_module
 from src.bot.config.settings import dev_users, director_users, employee_users
 #####################
 # ENV & TOKEN SETUP
@@ -65,8 +76,8 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -139,61 +150,46 @@ def update_site_info(site_name, contact, gate_code):
 conn = sqlite3.connect("bot_data.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# Update database schema to include job_photos table for date-based photo storage
 cursor.executescript(
-    """
-    CREATE TABLE IF NOT EXISTS grounds_data (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        site_name TEXT UNIQUE,
-        quote TEXT,
-        address TEXT,
-        order_no TEXT,
-        order_period TEXT,
-        area TEXT,
-        summer_schedule TEXT,
-        winter_schedule TEXT,
-        contact TEXT,
-        gate_code TEXT,
-        map_link TEXT,
-        assigned_to INTEGER,
-        status TEXT DEFAULT 'pending',
-        photos TEXT,
-        start_time TIMESTAMP,
-        finish_time TIMESTAMP,
-        notes TEXT,
-        scheduled_date TEXT,
-        priority TEXT DEFAULT 'normal'
-    );
-    
-    CREATE TABLE IF NOT EXISTS job_notes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id INTEGER,
-        author_id INTEGER,
-        author_role TEXT,
-        note TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(job_id) REFERENCES grounds_data(id)
-    );
-    
-    -- New table for storing photos with date information
-    CREATE TABLE IF NOT EXISTS job_photos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id INTEGER,
-        photo_path TEXT,
-        upload_date DATE,
-        FOREIGN KEY(job_id) REFERENCES grounds_data(id)
-    );
-    """
+"""
+CREATE TABLE IF NOT EXISTS grounds_data (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_name TEXT UNIQUE,
+    quote TEXT,
+    address TEXT,
+    order_no TEXT,
+    order_period TEXT,
+    area TEXT,
+    summer_schedule TEXT,
+    winter_schedule TEXT,
+    contact TEXT,
+    gate_code TEXT,
+    map_link TEXT,
+    assigned_to INTEGER,
+    status TEXT DEFAULT 'pending',
+    photos TEXT,
+    start_time TIMESTAMP,
+    finish_time TIMESTAMP,
+    notes TEXT,
+    scheduled_date TEXT,
+    priority TEXT DEFAULT 'normal'
+);
+CREATE TABLE IF NOT EXISTS job_notes (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+job_id INTEGER,
+author_id INTEGER,
+author_role TEXT,
+note TEXT,
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+FOREIGN KEY(job_id) REFERENCES grounds_data(id)
+);
+"""
 )
-
 cursor.executescript(""" 
-    CREATE INDEX IF NOT EXISTS idx_grounds_assigned_to ON grounds_data(assigned_to);
-    CREATE INDEX IF NOT EXISTS idx_grounds_status ON grounds_data(status);
-    CREATE INDEX IF NOT EXISTS idx_grounds_site_name ON grounds_data(site_name);
-    CREATE INDEX IF NOT EXISTS idx_job_photos_job_id ON job_photos(job_id);
-    CREATE INDEX IF NOT EXISTS idx_job_photos_upload_date ON job_photos(upload_date);
+CREATE INDEX IF NOT EXISTS idx_grounds_assigned_to ON grounds_data(assigned_to);
+CREATE INDEX IF NOT EXISTS idx_grounds_status ON grounds_data(status);
+CREATE INDEX IF NOT EXISTS idx_grounds_site_name ON grounds_data(site_name);
 """)
-
 try:
     cursor.execute("ALTER TABLE grounds_data ADD COLUMN scheduled_date TEXT;")
     cursor.execute("ALTER TABLE grounds_data ADD COLUMN priority TEXT DEFAULT 'normal';")
@@ -202,30 +198,26 @@ try:
 except sqlite3.OperationalError:
     logger.info("Database setup: New columns likely already exist.")
 
-# Migrate existing photos to the new table if needed
-try:
-    cursor.execute("SELECT id, photos FROM grounds_data WHERE photos IS NOT NULL AND photos != ''")
-    rows = cursor.fetchall()
+# Helper function to filter photos by date
+def filter_photos_by_date(photos_str, target_date):
+    """Filter photos based on date in filename"""
+    if not photos_str or not photos_str.strip():
+        return []
     
-    for job_id, photos in rows:
-        if photos and photos.strip():
-            photo_paths = photos.strip().split("|")
-            today = datetime.now().date().isoformat()
-            
-            # Check if we've already migrated these photos
-            cursor.execute("SELECT COUNT(*) FROM job_photos WHERE job_id = ?", (job_id,))
-            if cursor.fetchone()[0] == 0:  # Only migrate if no photos exist for this job
-                for path in photo_paths:
-                    if path.strip():
-                        cursor.execute(
-                            "INSERT INTO job_photos (job_id, photo_path, upload_date) VALUES (?, ?, ?)",
-                            (job_id, path.strip(), today)
-                        )
-            
-    conn.commit()
-    logger.info("Photo migration complete (if needed).")
-except Exception as e:
-    logger.error(f"Error during photo migration: {e}")
+    photo_paths = photos_str.strip().split("|")
+    filtered_paths = []
+    
+    for path in photo_paths:
+        # Check if the photo filename contains the target date
+        if target_date in path:
+            filtered_paths.append(path)
+    
+    return filtered_paths
+
+# Helper function to count photos for a specific date
+def count_photos_for_date(photos_str, target_date):
+    """Count photos for a specific date"""
+    return len(filter_photos_by_date(photos_str, target_date))
 
 #####################################
 # HELPER FUNCTIONS (Defined early)
@@ -291,11 +283,11 @@ async def build_director_assign_jobs_page(page: int, context: CallbackContext) -
             InlineKeyboardMarkup([[InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]])
         )
     selected_jobs = context.user_data.get("selected_jobs", set())
-    
+
     # FIXED: Only show header and instructions, not the redundant job list
     text_parts = [MessageTemplates.format_job_list_header("Available Jobs", len(jobs))]
     text_parts.append("Select jobs to assign by tapping the buttons below:")
-    
+
     keyboard = []
     for job_id, site_name, area, status in jobs:
         is_selected = job_id in selected_jobs
@@ -303,7 +295,7 @@ async def build_director_assign_jobs_page(page: int, context: CallbackContext) -
             f"{'✅' if is_selected else '⬜️'} {site_name} ({area or 'No Area'})", 
             callback_data=f"toggle_job_{job_id}"
         )])
-    
+
     nav_buttons = []
     if page > 1:
         nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"page_{page-1}"))
@@ -315,25 +307,6 @@ async def build_director_assign_jobs_page(page: int, context: CallbackContext) -
         keyboard.append([InlineKeyboardButton("✅ Assign Selected", callback_data="assign_selected_jobs")])
     return "\n\n".join(text_parts), InlineKeyboardMarkup(keyboard)
 
-# Helper function to get today's photos for a job
-def get_todays_photos(job_id):
-    today = datetime.now().date().isoformat()
-    cursor.execute(
-        "SELECT photo_path FROM job_photos WHERE job_id = ? AND upload_date = ? ORDER BY id",
-        (job_id, today)
-    )
-    photos = cursor.fetchall()
-    return [photo[0] for photo in photos] if photos else []
-
-# Helper function to get photos for a job on a specific date
-def get_job_photos_by_date(job_id, date):
-    cursor.execute(
-        "SELECT photo_path FROM job_photos WHERE job_id = ? AND upload_date = ? ORDER BY id",
-        (job_id, date)
-    )
-    photos = cursor.fetchall()
-    return [photo[0] for photo in photos] if photos else []
-
 #####################################
 # HANDLER FUNCTIONS
 #####################################
@@ -342,7 +315,7 @@ async def handle_photo(update: Update, context: CallbackContext):
     if "awaiting_photo_for" not in context.user_data:
         await update.message.reply_text("No photo expected at this time.")
         return
-    
+
     job_id = context.user_data["awaiting_photo_for"]
     photo_file = await update.message.photo[-1].get_file()
     photo_dir = "photos"
@@ -352,7 +325,7 @@ async def handle_photo(update: Update, context: CallbackContext):
     today = datetime.now().date().isoformat()
     photo_filename = f"job_{job_id}_{today}_{photo_file.file_id}.jpg"
     photo_path = os.path.join(photo_dir, photo_filename)
-    
+
     try:
         photo_bytes = await photo_file.download_as_bytearray()
         stream = io.BytesIO(photo_bytes)
@@ -370,27 +343,29 @@ async def handle_photo(update: Update, context: CallbackContext):
         logger.error(f"Photo processing error: {e}")
         await update.message.reply_text("Photo processing failed.")
         return
-    
+
     try:
-        # Store photo in the job_photos table with today's date
-        cursor.execute(
-            "INSERT INTO job_photos (job_id, photo_path, upload_date) VALUES (?, ?, ?)",
-            (job_id, photo_path, today)
-        )
-        conn.commit()
+        cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
+        result = cursor.fetchone()
+        current = result[0] if result else ""
+        new_photos = current.strip() + "|" + photo_path if current and current.strip() else photo_path
         
-        # Get count of today's photos for this job
-        cursor.execute(
-            "SELECT COUNT(*) FROM job_photos WHERE job_id = ? AND upload_date = ?",
-            (job_id, today)
-        )
-        todays_photo_count = cursor.fetchone()[0]
+        # Count today's photos
+        today_photos = filter_photos_by_date(new_photos, today)
+        today_count = len(today_photos)
+        
+        if today_count > 25:
+            await update.message.reply_text(MessageTemplates.format_error_message("Photo Limit Reached", "Maximum number of photos reached for this job."))
+            return
+        
+        cursor.execute("UPDATE grounds_data SET photos = ? WHERE id = ?", (new_photos, job_id))
+        conn.commit()
         
         # Only send confirmation if we're not in bulk upload mode
         if not context.user_data.get("bulk_upload_mode", False):
             confirmation_text = MessageTemplates.format_success_message(
                 "Photo uploaded", 
-                f"Photo uploaded for Job {job_id}. ({todays_photo_count}/25 photos uploaded today)"
+                f"Photo uploaded for Job {job_id}. ({today_count}/25 photos uploaded today)"
             )
             keyboard = [
                 [InlineKeyboardButton("🖼️ View Today's Photos", callback_data=f"view_photos_grid_{job_id}")],
@@ -431,7 +406,7 @@ async def reset_jobs_daily(context: CallbackContext):
     """Reset job statuses daily at 5 AM UK time"""
     logger.info("Running daily job reset at 5 AM UK time")
     try:
-        # Reset both completed and in-progress jobs
+        # FIXED: Reset both completed and in-progress jobs
         cursor.execute("""
             UPDATE grounds_data 
             SET status = 'pending', 
@@ -444,18 +419,19 @@ async def reset_jobs_daily(context: CallbackContext):
         conn.commit()
         logger.info(f"Reset {cursor.rowcount} jobs")
         
-        # Note: We don't delete photos - they remain in the job_photos table with their dates
-        
+        # If you want to notify someone about the reset
+        # await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text="Daily job reset completed")
     except Exception as e:
         logger.error(f"Error resetting jobs: {e}")
 
 def schedule_daily_reset(application):
     """Schedule the daily reset at 5 AM UK time"""
     job_queue = application.job_queue
-    
+
     # Schedule for 5 AM UK time (04:00 UTC in winter, 05:00 UTC+1 in summer)
+    # Create time object correctly
     reset_time = time(hour=4, minute=0)  # 4 AM UTC = 5 AM UK time in winter
-    
+
     job_queue.run_daily(
         callback=reset_jobs_daily,
         time=reset_time,
@@ -508,12 +484,12 @@ async def emp_employee_dashboard(update: Update, context: CallbackContext):
 async def emp_job_menu(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
-        "SELECT site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, address "
+        "SELECT site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos, address "
         "FROM grounds_data WHERE id = ?", 
         (job_id,)
     )
     job_data = cursor.fetchone()
-    
+
     if not job_data:
         # Updated error message formatting
         error_msg = MessageTemplates.format_error_message(
@@ -522,13 +498,14 @@ async def emp_job_menu(update: Update, context: CallbackContext):
         )
         await safe_edit_text(update, error_msg)
         return
+
+    site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, photos, address = job_data
     
-    site_name, status, notes, start_time, finish_time, area, contact, gate_code, map_link, address = job_data
-    
-    # Get today's photos for this job
-    today_photos = get_todays_photos(job_id)
+    # Get today's photos count
+    today = datetime.now().date().isoformat()
+    today_photos = filter_photos_by_date(photos, today)
     photo_count = len(today_photos)
-    
+
     # FIXED: Ensure notes are properly passed to format_job_card
     sections = [MessageTemplates.format_job_card(
         site_name=site_name, 
@@ -539,7 +516,7 @@ async def emp_job_menu(update: Update, context: CallbackContext):
         notes=notes,
         photo_count=photo_count
     )]
-    
+
     # Add weather forecast for outdoor jobs
     if area and any(outdoor_term in area.lower() for outdoor_term in ["garden", "outdoor", "yard", "field", "grounds", "exterior"]):
         # Use address if available, otherwise use site name + UK
@@ -547,7 +524,7 @@ async def emp_job_menu(update: Update, context: CallbackContext):
         weather_data = await get_weather_forecast(location)
         if weather_data:
             sections.append(format_weather_message(weather_data, site_name))
-    
+
     if contact or gate_code:
         contact, gate_code = update_site_info(site_name, contact, gate_code)
         sections.append(MessageTemplates.format_site_info(site_name=site_name, contact=contact, gate_code=gate_code, address=address, special_instructions=None))
@@ -562,15 +539,15 @@ async def emp_job_menu(update: Update, context: CallbackContext):
         keyboard.append([InlineKeyboardButton("ℹ️ Site Info", callback_data=f"site_info_{job_id}")])
     if map_link:
         keyboard.append([InlineKeyboardButton("🗺 Map Link", callback_data=f"map_link_{job_id}")])
-    
+
     # Add photo viewing button if there are photos today
     if photo_count > 0:
         keyboard.append([InlineKeyboardButton(f"🖼️ View Today's Photos ({photo_count})", callback_data=f"view_photos_grid_{job_id}")])
-    
+
     # Add weather refresh button for outdoor jobs
     if area and any(outdoor_term in area.lower() for outdoor_term in ["garden", "outdoor", "yard", "field", "grounds", "exterior"]):
         keyboard.append([InlineKeyboardButton("🌤️ Refresh Weather", callback_data=f"refresh_weather_{job_id}")])
-    
+
     keyboard.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="emp_view_jobs")])
     markup = InlineKeyboardMarkup(keyboard)
     await safe_edit_text(update, "\n\n".join(sections), reply_markup=markup)
@@ -621,25 +598,20 @@ async def emp_finish_job(update: Update, context: CallbackContext):
 async def emp_upload_photo(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     
-    # Check if we've reached the daily photo limit (25 photos per job per day)
+    # Check today's photo count
+    cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
+    photos_str = cursor.fetchone()[0] or ""
     today = datetime.now().date().isoformat()
-    cursor.execute(
-        "SELECT COUNT(*) FROM job_photos WHERE job_id = ? AND upload_date = ?",
-        (job_id, today)
-    )
-    current_count = cursor.fetchone()[0]
+    today_count = count_photos_for_date(photos_str, today)
     
-    if current_count >= 25:
-        await safe_edit_text(update, MessageTemplates.format_error_message(
-            "Photo Limit Reached", 
-            "Maximum number of photos (25) reached for this job today."
-        ))
+    if today_count >= 25:
+        await safe_edit_text(update, MessageTemplates.format_error_message("Photo Limit Reached", "Maximum number of photos (25) reached for this job today."))
         return
     
     context.user_data["awaiting_photo_for"] = job_id
     context.user_data["bulk_upload_mode"] = True  # Enable bulk upload mode
     context.user_data["return_to_job_menu"] = True  # Flag to return to job menu after upload
-    
+
     keyboard = [
         [InlineKeyboardButton("✅ Done Uploading", callback_data=f"finish_upload_{job_id}")],
         [InlineKeyboardButton(f"{ButtonLayouts.DANGER_PREFIX} Cancel", callback_data=f"job_menu_{job_id}")]
@@ -654,21 +626,19 @@ async def emp_upload_photo(update: Update, context: CallbackContext):
 
 async def finish_photo_upload(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
-    
+
     # Clean up context data
     context.user_data.pop("awaiting_photo_for", None)
     context.user_data.pop("bulk_upload_mode", None)
-    
-    # Get today's photo count for confirmation
+
+    # Get photo count for confirmation
+    cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
+    photos_str = cursor.fetchone()[0] or ""
     today = datetime.now().date().isoformat()
-    cursor.execute(
-        "SELECT COUNT(*) FROM job_photos WHERE job_id = ? AND upload_date = ?",
-        (job_id, today)
-    )
-    photo_count = cursor.fetchone()[0]
+    today_count = count_photos_for_date(photos_str, today)
     
     # Show brief confirmation
-    await update.callback_query.answer(f"Upload complete: {photo_count} photos today", show_alert=False)
+    await update.callback_query.answer(f"Upload complete: {today_count} photos today", show_alert=False)
     
     # Return directly to job menu without additional messages
     await emp_job_menu(update, context)
@@ -710,7 +680,7 @@ async def director_send_job(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     cursor.execute(
         """
-        SELECT site_name, start_time, finish_time, notes, contact, gate_code, map_link, area, address, status
+        SELECT site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area, address, status 
         FROM grounds_data 
         WHERE id = ?
         """, (job_id,)
@@ -719,14 +689,13 @@ async def director_send_job(update: Update, context: CallbackContext):
     if not row:
         await safe_edit_text(update, MessageTemplates.format_error_message("Job not found", "The requested job was not found."))
         return
-    
-    site_name, start_time, finish_time, notes, contact, gate_code, map_link, area, address, status = row
+
+    site_name, photos, start_time, finish_time, notes, contact, gate_code, map_link, area, address, status = row
     contact, gate_code = update_site_info(site_name, contact, gate_code)
-    
-    # Get photos from the job_photos table for today or the completion date
+
+    # Determine which date's photos to show
     photo_date = None
     if finish_time:
-        # If job is completed, use the finish date for photos
         try:
             finish_datetime = datetime.fromisoformat(finish_time)
             photo_date = finish_datetime.date().isoformat()
@@ -734,20 +703,19 @@ async def director_send_job(update: Update, context: CallbackContext):
             logger.error(f"Error parsing finish time: {e}")
             photo_date = datetime.now().date().isoformat()
     else:
-        # Otherwise use today's date
         photo_date = datetime.now().date().isoformat()
     
-    # Get photos for this job on the relevant date
-    photos_list = get_job_photos_by_date(job_id, photo_date)
-    photo_count = len(photos_list)
-    
+    # Filter photos by date
+    photo_paths = filter_photos_by_date(photos, photo_date)
+    photo_count = len(photo_paths)
+
     duration = "N/A"
     if start_time and finish_time:
         try:
             duration = str(datetime.fromisoformat(finish_time) - datetime.fromisoformat(start_time)).split('.')[0]
         except Exception:
             duration = "N/A"
-    
+
     # FIXED: Ensure notes are properly passed to format_job_card
     sections = [MessageTemplates.format_job_card(
         site_name=site_name, 
@@ -757,7 +725,7 @@ async def director_send_job(update: Update, context: CallbackContext):
         notes=notes,
         photo_count=photo_count
     )]
-    
+
     # Add weather forecast for outdoor jobs
     if area and any(outdoor_term in area.lower() for outdoor_term in ["garden", "outdoor", "yard", "field", "grounds", "exterior"]):
         # Use address if available, otherwise use site name + UK
@@ -765,7 +733,7 @@ async def director_send_job(update: Update, context: CallbackContext):
         weather_data = await get_weather_forecast(location)
         if weather_data:
             sections.append(format_weather_message(weather_data, site_name))
-    
+
     if contact or gate_code:
         sections.append(MessageTemplates.format_site_info(
             site_name=site_name, 
@@ -774,24 +742,24 @@ async def director_send_job(update: Update, context: CallbackContext):
             address=address, 
             special_instructions=None
         ))
-    
+
     keyboard = []
-    
+
     # Add photo viewing button if there are photos
     if photo_count > 0:
         date_str = "today" if photo_date == datetime.now().date().isoformat() else photo_date
         keyboard.append([InlineKeyboardButton(f"🖼️ View Photos ({photo_count}) from {date_str}", callback_data=f"view_photos_grid_{job_id}")])
-    
+
     # Add weather refresh button for outdoor jobs
     if area and any(outdoor_term in area.lower() for outdoor_term in ["garden", "outdoor", "yard", "field", "grounds", "exterior"]):
         keyboard.append([InlineKeyboardButton("🌤️ Refresh Weather", callback_data=f"refresh_weather_{job_id}")])
-    
+
     keyboard.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="calendar_view")])
     markup = InlineKeyboardMarkup(keyboard)
-    
-    if photos_list:
+
+    if photo_paths:
         media_group = []
-        for p in photos_list:
+        for p in photo_paths:
             abs_path = os.path.join(os.getcwd(), p.strip())
             if os.path.exists(abs_path):
                 try:
@@ -848,10 +816,12 @@ async def director_assign_day_selected(update: Update, context: CallbackContext)
 
 async def director_dashboard(update: Update, context: CallbackContext):
     header = MessageTemplates.format_dashboard_header("Director", "Director")
+    total_jobs = len(cursor.execute("SELECT id FROM grounds_data").fetchall())
     active_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'in_progress'").fetchall())
     completed_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'completed'").fetchall())
     stats = [
         f"📊 Today's Overview:",
+        f"• Total Jobs: {total_jobs}",
         f"• Active: {active_jobs}",
         f"• Completed: {completed_jobs}",
         MessageTemplates.SEPARATOR
@@ -926,22 +896,22 @@ async def assign_jobs_to_employee(update: Update, context: CallbackContext):
 async def director_calendar_view(update: Update, context: CallbackContext):
     # Log the employee IDs for debugging
     logger.info(f"Employee users: {employee_users}")
-    
+
     # Get Alex's ID from the employee_users dictionary
     alex_id = None
     for emp_id, name in employee_users.items():
         if name.lower() == "alex":
             alex_id = emp_id
             break
-    
+
     if not alex_id:
         logger.error("Alex's ID not found in employee_users dictionary")
         alex_id = -7747082939  # Fallback to the ID you provided
-    
+
     logger.info(f"Using Alex ID: {alex_id}")
-    
+
     kb = InlineKeyboardMarkup([
-         [InlineKeyboardButton("Andy", callback_data="view_completed_jobs_7500942259")],
+         [InlineKeyboardButton("Andy", callback_data="view_completed_jobs_1672989849")],
          [InlineKeyboardButton("Alex", callback_data=f"view_completed_jobs_{alex_id}")],
          [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]
     ])
@@ -953,15 +923,13 @@ async def director_calendar_view(update: Update, context: CallbackContext):
 
 async def view_job_photos(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
-    
-    # Get the job completion date or today's date
-    cursor.execute("SELECT site_name, finish_time FROM grounds_data WHERE id = ?", (job_id,))
+    cursor.execute("SELECT photos, site_name, finish_time FROM grounds_data WHERE id = ?", (job_id,))
     result = cursor.fetchone()
-    if not result:
-        await safe_edit_text(update, MessageTemplates.format_error_message("Job not found", "The requested job was not found."))
+    if not result or not result[0]:
+        await safe_edit_text(update, MessageTemplates.format_error_message("No Photos", "No photos available for this job."))
         return
-    
-    site_name, finish_time = result
+
+    photos, site_name, finish_time = result
     
     # Determine which date's photos to show
     photo_date = None
@@ -974,8 +942,8 @@ async def view_job_photos(update: Update, context: CallbackContext):
     else:
         photo_date = datetime.now().date().isoformat()
     
-    # Get photos for this job on the relevant date
-    photo_paths = get_job_photos_by_date(job_id, photo_date)
+    # Filter photos by date
+    photo_paths = filter_photos_by_date(photos, photo_date)
     
     if not photo_paths:
         date_str = "today" if photo_date == datetime.now().date().isoformat() else photo_date
@@ -1035,11 +1003,11 @@ async def handle_photo_navigation(update: Update, context: CallbackContext):
     data = update.callback_query.data
     new_index = int(data.split("_")[-1])
     photo_paths = context.user_data.get("job_photos", [])
-    
+
     if not photo_paths or new_index < 0 or new_index >= len(photo_paths):
         await update.callback_query.answer("Invalid photo navigation", show_alert=True)
         return
-    
+
     context.user_data["current_photo_index"] = new_index
     cursor.execute("SELECT site_name FROM grounds_data WHERE id = ?", (context.user_data["job_id"],))
     site_name = cursor.fetchone()[0]
@@ -1048,17 +1016,17 @@ async def handle_photo_navigation(update: Update, context: CallbackContext):
     photo_date = context.user_data.get("photo_date", datetime.now().date().isoformat())
     date_str = "today" if photo_date == datetime.now().date().isoformat() else photo_date
     display_name = f"{site_name} ({date_str})"
-    
+
     await show_single_photo(update, context, photo_paths[new_index], display_name, new_index, len(photo_paths))
 
 async def director_view_completed_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
     # Debug logging
     logger.info(f"Viewing completed jobs for employee: {employee_name} (ID: {employee_id})")
-    
+
     # FIX: Modified query to properly fetch completed jobs for any employee
     cursor.execute(
         """
-        SELECT id, site_name, area, status, notes, start_time, finish_time
+        SELECT id, site_name, area, status, notes, start_time, finish_time, photos
         FROM grounds_data 
         WHERE assigned_to = ? AND status = 'completed'
         ORDER BY finish_time DESC
@@ -1066,10 +1034,10 @@ async def director_view_completed_jobs(update: Update, context: CallbackContext,
         """, (employee_id,)
     )
     jobs = cursor.fetchall()
-    
+
     # More debug logging
     logger.info(f"Found {len(jobs) if jobs else 0} completed jobs for {employee_name}")
-    
+
     if not jobs:
         # Log the query for debugging
         logger.info(f"No completed jobs found for employee {employee_id} ({employee_name})")
@@ -1077,9 +1045,9 @@ async def director_view_completed_jobs(update: Update, context: CallbackContext,
         return
 
     sections = [MessageTemplates.format_job_list_header(f"{employee_name}'s Completed Jobs", len(jobs))]
-    
+
     for job in jobs:
-        job_id, site_name, area, status, notes, start_time, finish_time = job
+        job_id, site_name, area, status, notes, start_time, finish_time, photos = job
         
         # Format duration
         duration = "N/A"
@@ -1096,8 +1064,7 @@ async def director_view_completed_jobs(update: Update, context: CallbackContext,
             try:
                 finish_datetime = datetime.fromisoformat(finish_time)
                 photo_date = finish_datetime.date().isoformat()
-                photo_paths = get_job_photos_by_date(job_id, photo_date)
-                photo_count = len(photo_paths)
+                photo_count = count_photos_for_date(photos, photo_date)
             except Exception as e:
                 logger.error(f"Error getting photo count: {e}")
         
@@ -1112,11 +1079,11 @@ async def director_view_completed_jobs(update: Update, context: CallbackContext,
         )
         
         sections.append(job_details)
-    
+
     # Create buttons for each job
     buttons = []
     for job in jobs:
-        job_id, site_name, _, _, _, _, finish_time = job
+        job_id, site_name, _, _, _, _, finish_time, photos = job
         
         # Get photo count for the completion date
         photo_count = 0
@@ -1124,30 +1091,29 @@ async def director_view_completed_jobs(update: Update, context: CallbackContext,
             try:
                 finish_datetime = datetime.fromisoformat(finish_time)
                 photo_date = finish_datetime.date().isoformat()
-                photo_paths = get_job_photos_by_date(job_id, photo_date)
-                photo_count = len(photo_paths)
+                photo_count = count_photos_for_date(photos, photo_date)
             except Exception as e:
                 logger.error(f"Error getting photo count: {e}")
         
         button_text = f"{site_name} ({photo_count} 📸)" if photo_count > 0 else site_name
         buttons.append([InlineKeyboardButton(button_text, callback_data=f"view_job_{job_id}")])
-    
+
     buttons.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="calendar_view")])
-    
+
     await safe_edit_text(update, "\n\n".join(sections), reply_markup=InlineKeyboardMarkup(buttons))
 
 async def view_job_photos_grid(update: Update, context: CallbackContext):
     """View all job photos in a grid format (10 photos per message)"""
     job_id = int(update.callback_query.data.split('_')[-1])
-    
+
     # Get the job completion date or today's date
-    cursor.execute("SELECT site_name, finish_time FROM grounds_data WHERE id = ?", (job_id,))
+    cursor.execute("SELECT site_name, finish_time, photos FROM grounds_data WHERE id = ?", (job_id,))
     result = cursor.fetchone()
     if not result:
         await safe_edit_text(update, MessageTemplates.format_error_message("Job not found", "The requested job was not found."))
         return
-    
-    site_name, finish_time = result
+
+    site_name, finish_time, photos = result
     
     # Determine which date's photos to show
     photo_date = None
@@ -1160,8 +1126,8 @@ async def view_job_photos_grid(update: Update, context: CallbackContext):
     else:
         photo_date = datetime.now().date().isoformat()
     
-    # Get photos for this job on the relevant date
-    photo_paths = get_job_photos_by_date(job_id, photo_date)
+    # Filter photos by date
+    photo_paths = filter_photos_by_date(photos, photo_date)
     
     if not photo_paths:
         date_str = "today" if photo_date == datetime.now().date().isoformat() else photo_date
@@ -1170,7 +1136,7 @@ async def view_job_photos_grid(update: Update, context: CallbackContext):
             f"No photos available for this job on {date_str}."
         ))
         return
-    
+
     # Store in context for navigation
     context.user_data["job_photos"] = photo_paths
     context.user_data["job_id"] = job_id
@@ -1263,6 +1229,9 @@ async def send_photo_grid(update: Update, context: CallbackContext):
             await update.effective_message.delete()
         else:
             await safe_edit_text(update, MessageTemplates.format_error_message("Photo Error", "Could not display photos."))
+    except Exception as e:
+        logger.error(f"Error sending photo grid: {e}")
+        await safe_edit_text(update, MessageTemplates.format_error_message("Photo Error", f"Could not display photos: {e}"))
 
 async def handle_photo_grid_navigation(update: Update, context: CallbackContext):
     """Handle navigation between photo grid pages"""
@@ -1294,10 +1263,11 @@ async def director_view_employee_jobs(update: Update, context: CallbackContext, 
     sections.extend(await format_job_section("Assigned", jobs))
     buttons = await create_job_buttons(jobs)
     buttons.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")])
+    await safe_edit_text(update, "\n  Back", callback_data="director_dashboard")])
     await safe_edit_text(update, "\n\n".join(sections), reply_markup=InlineKeyboardMarkup(buttons))
 
 async def director_view_andys_jobs(update: Update, context: CallbackContext):
-    await director_view_employee_jobs(update, context, 7500942259, "Andy")
+    await director_view_employee_jobs(update, context, 1672989849, "Andy")
 
 async def director_view_alexs_jobs(update: Update, context: CallbackContext):
     # Get Alex's ID dynamically
@@ -1306,7 +1276,7 @@ async def director_view_alexs_jobs(update: Update, context: CallbackContext):
         if name.lower() == "alex":
             alex_id = emp_id
             break
-    
+
     if not alex_id:
         alex_id = -7747082939  # Fallback to the ID you provided
         
@@ -1323,24 +1293,24 @@ async def refresh_weather(update: Update, context: CallbackContext):
         (job_id,)
     )
     job_data = cursor.fetchone()
-    
+
     if not job_data:
         await update.callback_query.answer("Job not found", show_alert=True)
         return
-    
+
     site_name, area, address = job_data
-    
+
     # Use address if available, otherwise use site name + UK
     location = address if address else f"{site_name},UK"
-    
+
     # Clear cache to force refresh
     from weather_integration import weather_cache
     cache_key = f"{location}_1"
     if cache_key in weather_cache:
         del weather_cache[cache_key]
-    
+
     await update.callback_query.answer("Refreshing weather data...", show_alert=False)
-    
+
     # Redirect back to job menu to show updated weather
     if update.effective_user.id in director_users:
         await director_send_job(update, context)
@@ -1381,6 +1351,7 @@ async def callback_handler(update: Update, context: CallbackContext):
             "dev_director_dashboard": dev_director_dashboard,
             "view_andys_jobs": director_view_andys_jobs,
             "view_alexs_jobs": director_view_alexs_jobs,
+           #"view_tans_jobs": director_view_tans_jobs,
             "calendar_view": director_calendar_view,
             "director_dashboard": director_dashboard,
             "emp_view_jobs": emp_view_jobs,
@@ -1509,10 +1480,10 @@ async def help_command(update: Update, context: CallbackContext):
     # Get user role for role-specific help
     user_id = update.effective_user.id
     role = get_user_role(user_id)
-    
+
     # Base help text
     base_text = "🤖 *Bot Help*\n\n*/start* - Launch the bot and navigate to your dashboard.\n*/help* - Show this help message.\n\n"
-    
+
     # Role-specific help
     role_text = ""
     if role == "Dev":
@@ -1539,10 +1510,10 @@ async def help_command(update: Update, context: CallbackContext):
         )
     else:
         role_text = "You don't have a registered role. Please contact your administrator."
-    
+
     # Combine texts
     help_text = base_text + role_text
-    
+
     if update.callback_query:
         await update.callback_query.message.reply_text(help_text, parse_mode='Markdown')
     else:
@@ -1566,24 +1537,26 @@ def main() -> None:
     if not os.getenv("WEATHER_API_KEY"):
         logger.warning("WEATHER_API_KEY environment variable not set. Weather forecasts will be unavailable.")
         logger.info("Get a free API key from https://openweathermap.org/ and set it as WEATHER_API_KEY")
-    
+
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     job_handler = JobHandler()
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, job_handler.handle_text))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(CallbackQueryHandler(callback_handler))
-    
+
     # Schedule daily reset
     try:
         schedule_daily_reset(application)
     except Exception as e:
         logger.error(f"Failed to schedule daily reset: {e}")
-    
+
     start_profit_thread()
     application.run_polling()
 
 if __name__ == "__main__":
     main()
+
+```
