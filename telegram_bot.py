@@ -796,10 +796,10 @@ async def assign_jobs_to_employee(update: Update, context: CallbackContext):
 
 async def director_calendar_view(update: Update, context: CallbackContext):
     kb = InlineKeyboardMarkup([
-         [InlineKeyboardButton("Andy", callback_data="view_completed_jobs_1672989849")],
-         [InlineKeyboardButton("Alex", callback_data="view_completed_jobs_777888999")],
-         [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]
-    ])
+     [InlineKeyboardButton("Andy", callback_data="view_completed_jobs_7500942259")],
+     [InlineKeyboardButton("Alex", callback_data="view_completed_jobs_-7747082939")],  # Updated Alex's user ID
+     [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]
+])
     await safe_edit_text(update, "Select an employee to view completed jobs:", reply_markup=kb)
 
 #####################################
