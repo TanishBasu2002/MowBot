@@ -25,8 +25,7 @@ class Roles:
 dev_users = {1672989849}         # Replace with your dev Telegram user ID.
 director_users = {8018680694, 7996550019}  # Two director IDs.
 employee_users = {7500942259: "Andy", 
-                  7747082939: "Alex", # Main Alex
-                  6396234665: "Alex", # Second user ID for Alex
+                  7747082939: "Alex",
                  } 
 
 # Database Configuration
