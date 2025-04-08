@@ -851,7 +851,7 @@ async def director_dashboard(update: Update, context: CallbackContext):
     active_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'in_progress'").fetchall())
     completed_jobs = len(cursor.execute("SELECT id FROM grounds_data WHERE status = 'completed'").fetchall())
     stats = [
-        f"📊 Today's Overview:",,
+        f"📊 Today's Overview:",
         f"• Active: {active_jobs}",
         f"• Completed: {completed_jobs}",
         MessageTemplates.SEPARATOR
