@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 ######################################################
-# TELEGRAM_BOT.PY (ULTIMATE VERSION V9 - ENHANCED MowBot MVP)
+# TELEGRAM_BOT.PY (ULTIMATE VERSION V10 - ENHANCED MowBot MVP)
 #
 # Features:
 # - Dev Dashboard: Dedicated view for the developer with buttons
@@ -531,6 +531,7 @@ async def emp_upload_photo(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
     context.user_data["awaiting_photo_for"] = job_id
     context.user_data["bulk_upload_mode"] = True  # Enable bulk upload mode
+    context.user_data["return_to_job_menu"] = True  # Flag to return to job menu after upload
     
     keyboard = [
         [InlineKeyboardButton("✅ Done Uploading", callback_data=f"finish_upload_{job_id}")],
@@ -546,19 +547,22 @@ async def emp_upload_photo(update: Update, context: CallbackContext):
 
 async def finish_photo_upload(update: Update, context: CallbackContext):
     job_id = int(update.callback_query.data.split("_")[-1])
+    
+    # Clean up context data
     context.user_data.pop("awaiting_photo_for", None)
     context.user_data.pop("bulk_upload_mode", None)
     
+    # Get photo count for confirmation
     cursor.execute("SELECT photos FROM grounds_data WHERE id = ?", (job_id,))
     result = cursor.fetchone()
+    photo_count = 0
     if result and result[0]:
         photo_count = len(result[0].split("|"))
-        await safe_edit_text(update, 
-            MessageTemplates.format_success_message(
-                "Upload Complete",
-                f"Total {photo_count} photos uploaded for this job."
-            )
-        )
+    
+    # Show brief confirmation
+    await update.callback_query.answer(f"Upload complete: {photo_count} photos", show_alert=False)
+    
+    # Return directly to job menu without additional messages
     await emp_job_menu(update, context)
 
 async def emp_site_info(update: Update, context: CallbackContext):
@@ -876,6 +880,7 @@ async def handle_photo_navigation(update: Update, context: CallbackContext):
     await show_single_photo(update, context, photo_paths[new_index], site_name, new_index, len(photo_paths))
 
 async def director_view_completed_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
+    # FIX: Modified query to properly fetch completed jobs for any employee
     cursor.execute(
         """
         SELECT id, site_name, area, status, notes, start_time, finish_time, photos, contact, gate_code, map_link
@@ -888,6 +893,8 @@ async def director_view_completed_jobs(update: Update, context: CallbackContext,
     jobs = cursor.fetchall()
     
     if not jobs:
+        # Log the query for debugging
+        logger.info(f"No completed jobs found for employee {employee_id} ({employee_name})")
         await safe_edit_text(update, MessageTemplates.format_success_message("No Completed Jobs", f"No completed jobs found for {employee_name}."))
         return
 
@@ -1139,6 +1146,7 @@ async def callback_handler(update: Update, context: CallbackContext):
         job_handler = JobHandler()
         handlers = {
             "start": start,
+            "dev_dashboard": dev_dashboard,
             "dev_employee_dashboard": dev_employee_dashboard,
             "dev_director_dashboard": dev_director_dashboard,
             "view_andys_jobs": director_view_andys_jobs,
@@ -1267,22 +1275,47 @@ async def start(update: Update, context: CallbackContext):
         await update.message.reply_text(MessageTemplates.format_error_message("Access Denied", "You do not have a registered role."))
 
 async def help_command(update: Update, context: CallbackContext):
-    text = (
-        "🤖 *Bot Help*\n\n"
-        "*/start* - Launch the bot and navigate to your dashboard.\n"
-        "*/help* - Show this help message.\n\n"
-        "Use the inline buttons to navigate dashboards and manage jobs.\n"
-        "- *Director*: See 'Assign Jobs' and 'View Completed Jobs'.\n"
-        "   • 'Assign Jobs' lists all unassigned sites (paginated) for selection, then lets you assign them to Andy or Alex.\n"
-        "   • 'View Completed Jobs' shows a submenu with 'Andy' and 'Alex' buttons to view their completed jobs.\n"
-        "- *Employee*: View your assigned jobs, start/finish jobs, and upload photos.\n"
-        "- *Dev*: Access a dedicated Dev Dashboard with buttons for both Director and Employee dashboards.\n\n"
-        "If you have any questions, ask your system admin."
-    )
-    if update.callback_query:
-        await update.callback_query.message.reply_text(text, parse_mode='Markdown')
+    # Get user role for role-specific help
+    user_id = update.effective_user.id
+    role = get_user_role(user_id)
+    
+    # Base help text
+    base_text = "🤖 *Bot Help*\n\n*/start* - Launch the bot and navigate to your dashboard.\n*/help* - Show this help message.\n\n"
+    
+    # Role-specific help
+    role_text = ""
+    if role == "Dev":
+        role_text = (
+            "*Developer Commands*\n"
+            "- Access both Director and Employee dashboards for testing\n"
+            "- Test all functionality before deployment\n"
+        )
+    elif role == "Director":
+        role_text = (
+            "*Director Commands*\n"
+            "- *Assign Jobs*: Select unassigned sites and assign them to employees\n"
+            "- *View Completed Jobs*: See jobs completed by each employee\n"
+            "- View job details including photos, notes, and weather forecasts\n"
+        )
+    elif role == "Employee":
+        role_text = (
+            "*Employee Commands*\n"
+            "- View your assigned jobs\n"
+            "- Start and finish jobs\n"
+            "- Add notes to jobs\n"
+            "- Upload photos of completed work\n"
+            "- Check weather forecasts for outdoor jobs\n"
+        )
     else:
-        await update.message.reply_text(text, parse_mode='Markdown')
+        role_text = "You don't have a registered role. Please contact your administrator."
+    
+    # Combine texts
+    help_text = base_text + role_text
+    
+    if update.callback_query:
+        await update.callback_query.message.reply_text(help_text, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(help_text, parse_mode='Markdown')
 
 #####################################
 # MAIN FUNCTION & SCHEDULER SETUP
