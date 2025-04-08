@@ -880,7 +880,26 @@ async def handle_photo_navigation(update: Update, context: CallbackContext):
     await show_single_photo(update, context, photo_paths[new_index], site_name, new_index, len(photo_paths))
 
 async def director_view_completed_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
-    # FIX: Modified query to properly fetch completed jobs for any employee
+    # Log the request for debugging
+    logger.info(f"Viewing completed jobs for employee {employee_id} ({employee_name})")
+    
+    # First, let's check if the employee exists in the database
+    cursor.execute("SELECT COUNT(*) FROM grounds_data WHERE assigned_to = ?", (employee_id,))
+    total_jobs = cursor.fetchone()[0]
+    logger.info(f"Total jobs found for {employee_name}: {total_jobs}")
+    
+    # Now check specifically for completed jobs
+    cursor.execute(
+        """
+        SELECT COUNT(*) 
+        FROM grounds_data 
+        WHERE assigned_to = ? AND status = 'completed'
+        """, (employee_id,)
+    )
+    completed_count = cursor.fetchone()[0]
+    logger.info(f"Completed jobs found for {employee_name}: {completed_count}")
+    
+    # Get the actual completed jobs with detailed query
     cursor.execute(
         """
         SELECT id, site_name, area, status, notes, start_time, finish_time, photos, contact, gate_code, map_link
@@ -893,11 +912,19 @@ async def director_view_completed_jobs(update: Update, context: CallbackContext,
     jobs = cursor.fetchall()
     
     if not jobs:
-        # Log the query for debugging
-        logger.info(f"No completed jobs found for employee {employee_id} ({employee_name})")
-        await safe_edit_text(update, MessageTemplates.format_success_message("No Completed Jobs", f"No completed jobs found for {employee_name}."))
+        # No completed jobs found
+        logger.warning(f"No completed jobs found for {employee_name} (ID: {employee_id})")
+        
+        # Show a message with debugging info to help troubleshoot
+        debug_info = f"Employee ID: {employee_id}\nTotal jobs: {total_jobs}\nCompleted jobs: {completed_count}"
+        message = MessageTemplates.format_success_message(
+            "No Completed Jobs", 
+            f"No completed jobs found for {employee_name}.\n\nDebug info:\n{debug_info}"
+        )
+        await safe_edit_text(update, message)
         return
 
+    # Process jobs as before
     sections = [MessageTemplates.format_job_list_header(f"{employee_name}'s Completed Jobs", len(jobs))]
     
     for job in jobs:
@@ -938,7 +965,7 @@ async def director_view_completed_jobs(update: Update, context: CallbackContext,
     buttons.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="calendar_view")])
     
     await safe_edit_text(update, "\n\n".join(sections), reply_markup=InlineKeyboardMarkup(buttons))
-
+    
 async def view_job_photos_grid(update: Update, context: CallbackContext):
     """View all job photos in a grid format (10 photos per message)"""
     job_id = int(update.callback_query.data.split('_')[-1])
@@ -1052,35 +1079,35 @@ async def handle_photo_grid_navigation(update: Update, context: CallbackContext)
     context.user_data["current_page"] = new_page
     await send_photo_grid(update, context)
 
-async def director_view_employee_jobs(update: Update, context: CallbackContext, employee_id: int, employee_name: str):
-    cursor.execute(
-        """
-        SELECT id, site_name, area, status, notes, start_time, finish_time 
-        FROM grounds_data 
-        WHERE assigned_to = ? AND status != 'completed'
-        ORDER BY id
-        """, (employee_id,)
-    )
-    jobs = cursor.fetchall()
-    if not jobs:
-        await safe_edit_text(update, MessageTemplates.format_success_message("No Jobs", f"No jobs assigned to {employee_name} today."))
-        return
-    sections = [MessageTemplates.format_job_list_header(f"{employee_name}'s Jobs", len(jobs))]
-    sections.extend(await format_job_section("Assigned", jobs))
-    buttons = await create_job_buttons(jobs)
-    buttons.append([InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")])
-    await safe_edit_text(update, "\n\n".join(sections), reply_markup=InlineKeyboardMarkup(buttons))
+async def director_calendar_view(update: Update, context: CallbackContext):
+    # Log the employee IDs for debugging
+    logger.info(f"Employee users: {employee_users}")
+    
+    # Get Alex's ID from the employee_users dictionary
+    alex_id = None
+    for emp_id, name in employee_users.items():
+        if name.lower() == "alex":
+            alex_id = emp_id
+            break
+    
+    if not alex_id:
+        logger.error("Alex's ID not found in employee_users dictionary")
+        alex_id = -7747082939  # Fallback to the ID you provided
+    
+    logger.info(f"Using Alex ID: {alex_id}")
+    
+    kb = InlineKeyboardMarkup([
+         [InlineKeyboardButton("Andy", callback_data="view_completed_jobs_1672989849")],
+         [InlineKeyboardButton("Alex", callback_data=f"view_completed_jobs_{alex_id}")],
+         [InlineKeyboardButton(f"{ButtonLayouts.BACK_PREFIX} Back", callback_data="director_dashboard")]
+    ])
+    await safe_edit_text(update, "Select an employee to view completed jobs:", reply_markup=kb)
 
 async def director_view_andys_jobs(update: Update, context: CallbackContext):
-    await director_view_employee_jobs(update, context, 1672989849, "Andy")
+    await director_view_employee_jobs(update, context, 7500942259, "Andy")
 
 async def director_view_alexs_jobs(update: Update, context: CallbackContext):
-    await director_view_employee_jobs(update, context, 777888999, "Alex")
-
-"""
-async def director_view_tans_jobs(update: Update, context: CallbackContext):
-    await director_view_employee_jobs(update, context, 972438138, "Tan")
-"""
+    await director_view_employee_jobs(update, context, 7747082939, "Alex")
 
 #####################################
 # WEATHER FUNCTIONS
